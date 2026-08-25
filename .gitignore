@@ -1,0 +1,36 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Claude Code (project notes, kept local/private — see README)
+.claude/
+CLAUDE.md
+
+# App icons are binary and generated per-machine; regenerate with
+# `npx tauri icon path/to/1024x1024.png` before building an installer.
+src-tauri/icons/
+
+# Rust (src-tauri/.gitignore also covers this within that subtree)
+/src-tauri/target/
+/src-tauri/gen/schemas
