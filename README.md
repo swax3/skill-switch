@@ -22,7 +22,20 @@ Built with Tauri v2, React, Tailwind v4, and shadcn/ui.
 - Manual refresh button, since the list is only read on launch/toggle.
 - Follows the OS light/dark theme; remembers window size and position.
 
-All filesystem/settings access happens in the Rust backend — the frontend has no direct file access and only talks to the four exposed commands (`list_skills`, `set_skill_enabled`, `set_skill_manual_only`, `read_env`). `set_skill_manual_only` never rewrites `settings.json` wholesale; it patches the `skillOverrides` key in place (with `serde_json`'s `preserve_order` feature, so the file's key order doesn't churn) and a mutex serializes concurrent writes. Opening a repo link goes through `@tauri-apps/plugin-shell`'s `open()` (a plain `<a target="_blank">` gets blocked by Tauri's navigation guard) — scoped in `capabilities/default.json` to `^https://` only.
+All filesystem/settings access happens in the Rust backend — the frontend has no direct file access and only talks to the four exposed skill commands (`list_skills`, `set_skill_enabled`, `set_skill_manual_only`, `read_env`). `set_skill_manual_only` never rewrites `settings.json` wholesale; it patches the `skillOverrides` key in place (with `serde_json`'s `preserve_order` feature, so the file's key order doesn't churn) and a mutex serializes concurrent writes. Opening a repo link goes through `@tauri-apps/plugin-shell`'s `open()` (a plain `<a target="_blank">` gets blocked by Tauri's navigation guard) — scoped in `capabilities/default.json` to `^https://` only.
+
+### OmniRoute tab
+
+Routes individual, deliberately-added "throwaway" project folders through a local [OmniRoute](https://github.com/diegosouzapw/OmniRoute) proxy instead of talking to Anthropic directly — **never globally**.
+
+- **Terminal/CLI only.** Claude Code CLI reads `env.ANTHROPIC_BASE_URL`/`env.ANTHROPIC_AUTH_TOKEN` from a project's `.claude/settings.local.json`; Claude **Desktop does not** — Desktop has its own, separate, global-to-the-whole-app gateway mechanism with no per-project concept, so there is no way to route only some Desktop projects without it affecting every Desktop chat. This app deliberately doesn't try.
+- **Two independent ways to route a session:**
+  - **Persistent** — a per-project toggle patches (never replaces) `.claude/settings.local.json`'s `env` object with the two variables. Takes effect in terminal sessions started afterward — the fallback for anyone who just opens a normal terminal themselves.
+  - **One-off** — an "open terminal" button per project launches Windows Terminal (or `cmd.exe` if `wt.exe` isn't installed) with the two variables set only on that one process's environment, then runs `claude`. Nothing is written to disk.
+- Backups of the file being patched live centrally under the app's own local data folder (never inside the project — no git noise, no unignored plaintext-key file), capped at the 3 most recent per project.
+- If a project's `.gitignore` doesn't cover `settings.local.json`, the app offers to append that line (never overwrites) rather than blocking the toggle.
+- On launch, checks whether `ANTHROPIC_BASE_URL` is accidentally set globally — in `~/.claude/settings.json` or in the Windows registry (`HKCU`/`HKLM` `Environment`, not the process's own possibly-stale env snapshot) — and warns if so, since that would affect every project.
+- The OmniRoute API key is stored write-only from the frontend's perspective (`apiKeySet: boolean`, never the plaintext, crosses the Tauri IPC boundary).
 
 ## Requirements
 
@@ -57,10 +70,11 @@ Produces an MSI and an NSIS installer under `src-tauri/target/release/bundle/`.
 ## Project layout
 
 ```
-src/                 React frontend (no filesystem access)
-  components/         SkillList, ConfigPanel, shadcn/ui primitives
-  lib/api.ts          Typed wrapper around the Tauri commands
-src-tauri/src/lib.rs  Rust backend: list_skills, set_skill_enabled, set_skill_manual_only, read_env
+src/                    React frontend (no filesystem access)
+  components/            SkillList, ConfigPanel, OmniroutePanel, shadcn/ui primitives
+  lib/api.ts             Typed wrapper around the Tauri commands
+src-tauri/src/lib.rs      Rust backend: list_skills, set_skill_enabled, set_skill_manual_only, read_env
+src-tauri/src/omniroute.rs  OmniRoute tab backend (11 commands, see CLAUDE.md)
 ```
 
 ## License

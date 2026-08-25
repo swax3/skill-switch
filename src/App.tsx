@@ -1,24 +1,40 @@
 import { useEffect, useState } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { Info, Minus, Plug, Puzzle, Square, X } from "lucide-react"
+import { Info, Minus, Plug, Puzzle, Route, Square, X } from "lucide-react"
 import { toast } from "sonner"
 import {
+  addOmnirouteProject,
+  checkGlobalRoute,
   listSkills,
   readEnv,
+  readOmniroute,
+  removeOmnirouteProject,
+  setOmnirouteConfig,
+  setProjectRoute,
   setSkillEnabled,
   setSkillManualOnly,
   type EnvInfo,
+  type GlobalRouteWarning,
+  type OmniState,
   type Skill,
 } from "@/lib/api"
 import { SkillList, type SkillState } from "@/components/skill-list"
 import { ConfigPanel } from "@/components/config-panel"
+import { OmniroutePanel } from "@/components/omniroute-panel"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
-type View = "skills" | "config"
+type View = "skills" | "config" | "omniroute"
 
 const appWindow = "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null
+
+const SIDEBAR_NOTE: Partial<Record<View, string>> = {
+  skills:
+    'Alle drei Zustände wirken erst in der nächsten Claude-Code-Session. In laufenden Chats: die Kopier-Buttons nutzen.',
+  omniroute:
+    'Gilt nur für Terminal-Sessions in diesem Ordner. Die Desktop-App läuft immer über Anthropic.',
+}
 
 function App() {
   const [view, setView] = useState<View>("skills")
@@ -27,6 +43,9 @@ function App() {
   const [pending, setPending] = useState<Set<string>>(new Set())
   const [env, setEnv] = useState<EnvInfo | null>(null)
   const [envLoading, setEnvLoading] = useState(true)
+  const [omni, setOmni] = useState<OmniState | null>(null)
+  const [omniLoading, setOmniLoading] = useState(true)
+  const [globalWarn, setGlobalWarn] = useState<GlobalRouteWarning | null>(null)
 
   const refreshSkills = () =>
     listSkills()
@@ -34,12 +53,24 @@ function App() {
       .catch((e) => toast.error(String(e)))
       .finally(() => setSkillsLoading(false))
 
+  const refreshOmni = () =>
+    readOmniroute()
+      .then(setOmni)
+      .catch((e) => toast.error(String(e)))
+      .finally(() => setOmniLoading(false))
+
   useEffect(() => {
     refreshSkills()
+    refreshOmni()
     readEnv()
       .then(setEnv)
       .catch((e) => toast.error(String(e)))
       .finally(() => setEnvLoading(false))
+    // App-startup check, not tab-open: an accidental global override affects every
+    // project, not just ones opted into OmniRoute, so it needs to surface up front.
+    checkGlobalRoute()
+      .then((w) => setGlobalWarn(w.settingsJson || w.userEnv || w.machineEnv ? w : null))
+      .catch((e) => toast.error(String(e)))
   }, [])
 
   const STATE_LABEL: Record<SkillState, string> = {
@@ -104,12 +135,48 @@ function App() {
     )
   }
 
+  async function handleSaveOmniConfig(baseUrl: string, apiKey?: string) {
+    await setOmnirouteConfig(baseUrl, apiKey)
+    await refreshOmni()
+  }
+
+  async function handleAddProject(path: string) {
+    await withPending([path], async () => {
+      await addOmnirouteProject(path)
+      await refreshOmni()
+    })
+  }
+
+  async function handleRemoveProject(path: string) {
+    await withPending([path], async () => {
+      await removeOmnirouteProject(path)
+      await refreshOmni()
+    })
+  }
+
+  async function handleToggleProject(path: string, active: boolean) {
+    await withPending([path], async () => {
+      try {
+        const warning = await setProjectRoute(path, active)
+        toast.success(
+          `Routing für „${path}" ist jetzt ${active ? "an" : "aus"}. Wirkt ab der nächsten Terminal-Session.`
+        )
+        if (warning) toast.warning(warning)
+        await refreshOmni()
+      } catch (e) {
+        toast.error(String(e))
+      }
+    })
+  }
+
+  const activeRouteCount = omni?.projects.filter((p) => p.active).length ?? 0
+
   return (
     <TooltipProvider>
       <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
         <TitleBar />
         <div className="flex min-h-0 flex-1">
-          <Sidebar view={view} onChange={setView} />
+          <Sidebar view={view} onChange={setView} omniBadge={activeRouteCount} />
           <main className="min-w-0 flex-1 overflow-hidden">
             {view === "skills" ? (
               <SkillList
@@ -120,8 +187,20 @@ function App() {
                 onGroupStateChange={handleGroupStateChange}
                 onRefresh={refreshSkills}
               />
-            ) : (
+            ) : view === "config" ? (
               <ConfigPanel env={env} loading={envLoading} />
+            ) : (
+              <OmniroutePanel
+                omni={omni}
+                loading={omniLoading}
+                pending={pending}
+                globalWarn={globalWarn}
+                onRefresh={refreshOmni}
+                onSaveConfig={handleSaveOmniConfig}
+                onAddProject={handleAddProject}
+                onRemoveProject={handleRemoveProject}
+                onToggleProject={handleToggleProject}
+              />
             )}
           </main>
         </div>
@@ -181,7 +260,16 @@ function WindowButton({
   )
 }
 
-function Sidebar({ view, onChange }: { view: View; onChange: (v: View) => void }) {
+function Sidebar({
+  view,
+  onChange,
+  omniBadge,
+}: {
+  view: View
+  onChange: (v: View) => void
+  omniBadge: number
+}) {
+  const note = SIDEBAR_NOTE[view]
   return (
     <aside className="flex w-52 shrink-0 flex-col justify-between border-r border-border p-3">
       <nav className="space-y-0.5">
@@ -197,15 +285,21 @@ function Sidebar({ view, onChange }: { view: View; onChange: (v: View) => void }
           active={view === "config"}
           onClick={() => onChange("config")}
         />
+        <NavItem
+          icon={Route}
+          label="OmniRoute"
+          active={view === "omniroute"}
+          onClick={() => onChange("omniroute")}
+          badge={omniBadge}
+        />
       </nav>
 
-      <div className="flex items-start gap-1.5 rounded-lg px-2 py-2 text-[11px] leading-snug text-muted-foreground">
-        <Info className="mt-0.5 size-3.5 shrink-0" />
-        <p>
-          Alle drei Zustände wirken erst in der nächsten Claude-Code-Session. In laufenden Chats:
-          die Kopier-Buttons nutzen.
-        </p>
-      </div>
+      {note && (
+        <div className="flex items-start gap-1.5 rounded-lg px-2 py-2 text-[11px] leading-snug text-muted-foreground">
+          <Info className="mt-0.5 size-3.5 shrink-0" />
+          <p>{note}</p>
+        </div>
+      )}
     </aside>
   )
 }
@@ -215,11 +309,13 @@ function NavItem({
   label,
   active,
   onClick,
+  badge,
 }: {
   icon: typeof Puzzle
   label: string
   active: boolean
   onClick: () => void
+  badge?: number
 }) {
   return (
     <button
@@ -227,13 +323,21 @@ function NavItem({
       onClick={onClick}
       className={cn(
         "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors",
-        active
-          ? "bg-primary text-primary-foreground"
-          : "text-foreground hover:bg-accent"
+        active ? "bg-primary text-primary-foreground" : "text-foreground hover:bg-accent"
       )}
     >
       <Icon className="size-4" />
-      {label}
+      <span className="flex-1">{label}</span>
+      {!!badge && (
+        <span
+          className={cn(
+            "rounded-full px-1.5 text-[11px] font-medium",
+            active ? "bg-primary-foreground/20" : "bg-warning/15 text-warning"
+          )}
+        >
+          {badge}
+        </span>
+      )}
     </button>
   )
 }

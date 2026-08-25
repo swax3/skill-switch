@@ -25,3 +25,5 @@ tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-shell = "2"
+winreg = "0.55"
+url = "2"

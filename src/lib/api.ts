@@ -30,6 +30,29 @@ export type EnvInfo = {
   plugins: PluginInfo[]
 }
 
+export type ProjectRoute = {
+  path: string
+  exists: boolean
+  /** env.ANTHROPIC_BASE_URL is present in that project's settings.local.json right now. */
+  active: boolean
+  baseUrl: string | null
+  hasToken: boolean
+  gitignoreOk: boolean
+  error: string | null
+}
+
+export type OmniState = {
+  baseUrl: string
+  apiKeySet: boolean
+  projects: ProjectRoute[]
+}
+
+export type GlobalRouteWarning = {
+  settingsJson: string | null
+  userEnv: string | null
+  machineEnv: string | null
+}
+
 // Backend structs are #[serde(rename_all = "camelCase")], so field names line up as-is.
 const isTauri = "__TAURI_INTERNALS__" in window
 
@@ -72,6 +95,105 @@ export async function openExternal(url: string): Promise<void> {
     return
   }
   await open(url)
+}
+
+// --- OmniRoute -------------------------------------------------------------
+// CLI/terminal only — Claude Desktop reads its own global, app-wide gateway
+// config, not any settings.json, so per-project routing is out of reach there.
+
+export async function readOmniroute(): Promise<OmniState> {
+  if (!isTauri) return mockOmniState
+  return invoke<OmniState>("read_omniroute")
+}
+
+export async function setOmnirouteConfig(baseUrl: string, apiKey?: string): Promise<void> {
+  if (!isTauri) {
+    mockOmniState.baseUrl = baseUrl
+    if (apiKey) mockOmniState.apiKeySet = true
+    return
+  }
+  await invoke("set_omniroute_config", { baseUrl, apiKey: apiKey ?? null })
+}
+
+export async function addOmnirouteProject(path: string): Promise<void> {
+  if (!isTauri) {
+    mockOmniState.projects.push({
+      path,
+      exists: true,
+      active: false,
+      baseUrl: null,
+      hasToken: false,
+      gitignoreOk: false,
+      error: null,
+    })
+    return
+  }
+  await invoke("add_omniroute_project", { path })
+}
+
+export async function removeOmnirouteProject(path: string): Promise<void> {
+  if (!isTauri) {
+    mockOmniState.projects = mockOmniState.projects.filter((p) => p.path !== path)
+    return
+  }
+  await invoke("remove_omniroute_project", { path })
+}
+
+/** Returns a warning string if the route was applied but something needs attention. */
+export async function setProjectRoute(path: string, active: boolean): Promise<string | null> {
+  if (!isTauri) {
+    const project = mockOmniState.projects.find((p) => p.path === path)
+    if (project) {
+      project.active = active
+      project.baseUrl = active ? mockOmniState.baseUrl : null
+      project.hasToken = active
+    }
+    return null
+  }
+  return invoke<string | null>("set_project_route", { path, active })
+}
+
+export async function addGitignoreEntry(path: string): Promise<void> {
+  if (!isTauri) {
+    const project = mockOmniState.projects.find((p) => p.path === path)
+    if (project) project.gitignoreOk = true
+    return
+  }
+  await invoke("add_gitignore_entry", { path })
+}
+
+export async function omnirouteStatus(): Promise<boolean> {
+  if (!isTauri) return mockServiceRunning
+  return invoke<boolean>("omniroute_status")
+}
+
+export async function startOmniroute(): Promise<void> {
+  if (!isTauri) {
+    mockServiceRunning = true
+    return
+  }
+  await invoke("start_omniroute")
+}
+
+export async function stopOmniroute(): Promise<void> {
+  if (!isTauri) {
+    mockServiceRunning = false
+    return
+  }
+  await invoke("stop_omniroute")
+}
+
+export async function openOmnirouteTerminal(path: string): Promise<void> {
+  if (!isTauri) {
+    window.alert(`(Vorschau) Würde ein Terminal in ${path} mit OmniRoute-Routing öffnen.`)
+    return
+  }
+  await invoke("open_omniroute_terminal", { path })
+}
+
+export async function checkGlobalRoute(): Promise<GlobalRouteWarning> {
+  if (!isTauri) return mockGlobalRoute
+  return invoke<GlobalRouteWarning>("check_global_route")
 }
 
 // Dev-mock data so the UI can be previewed in a plain browser (no Tauri backend attached).
@@ -124,4 +246,37 @@ const mockEnv: EnvInfo = {
     { id: "ponytail@ponytail", version: "4.9.0", enabled: true },
     { id: "impeccable@impeccable", version: "4.1.1", enabled: true },
   ],
+}
+
+const mockOmniState: OmniState = {
+  baseUrl: "http://localhost:20128/v1",
+  apiKeySet: true,
+  projects: [
+    {
+      path: "C:\\Users\\you\\Code\\wegwerf-projekt",
+      exists: true,
+      active: true,
+      baseUrl: "http://localhost:20128/v1",
+      hasToken: true,
+      gitignoreOk: true,
+      error: null,
+    },
+    {
+      path: "C:\\Users\\you\\Code\\anderes-projekt",
+      exists: true,
+      active: false,
+      baseUrl: null,
+      hasToken: false,
+      gitignoreOk: false,
+      error: null,
+    },
+  ],
+}
+
+let mockServiceRunning = false
+
+const mockGlobalRoute: GlobalRouteWarning = {
+  settingsJson: null,
+  userEnv: null,
+  machineEnv: null,
 }

@@ -1,3 +1,5 @@
+mod omniroute;
+
 use serde::Serialize;
 use serde_json::Value;
 use std::fs;
@@ -55,7 +57,7 @@ struct EnvInfo {
     plugins: Vec<PluginInfo>,
 }
 
-fn claude_dir() -> Result<PathBuf, String> {
+pub(crate) fn claude_dir() -> Result<PathBuf, String> {
     let profile = std::env::var("USERPROFILE")
         .map_err(|_| "USERPROFILE ist nicht gesetzt.".to_string())?;
     Ok(PathBuf::from(profile).join(".claude"))
@@ -288,7 +290,7 @@ fn set_skill_enabled(name: String, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn read_json_file(path: &Path) -> Option<Value> {
+pub(crate) fn read_json_file(path: &Path) -> Option<Value> {
     fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -434,6 +436,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
+        .manage(omniroute::ProxyState(Mutex::new(None)))
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -448,7 +451,18 @@ pub fn run() {
             list_skills,
             set_skill_enabled,
             set_skill_manual_only,
-            read_env
+            read_env,
+            omniroute::read_omniroute,
+            omniroute::set_omniroute_config,
+            omniroute::add_omniroute_project,
+            omniroute::remove_omniroute_project,
+            omniroute::set_project_route,
+            omniroute::add_gitignore_entry,
+            omniroute::omniroute_status,
+            omniroute::start_omniroute,
+            omniroute::stop_omniroute,
+            omniroute::open_omniroute_terminal,
+            omniroute::check_global_route
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
