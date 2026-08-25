@@ -14,6 +14,7 @@ Built with Tauri v2, React, Tailwind v4, and shadcn/ui.
 - Switching to **Aus** also removes any leftover `skillOverrides` entry for that skill (best-effort tidy-up); switching a skill back to **Aktiv** clears the override too.
 - Works correctly with symlinked/junction skill folders (e.g. skills managed by a package manager) — the link itself moves, its target is untouched.
 - Both mechanisms only take effect in a **new** Claude Code session — `settings.json` is read once at launch, same as the filesystem. There's no way to hot-reload either mid-chat, which is exactly what the copy-prompt buttons below are for.
+- **Groups skills by where they came from.** If `~/.agents/.skill-lock.json` exists (written by skill-registry tools that manage `~/.agents/skills` and link it into `~/.claude/skills` via junctions), each group header shows the source repo as a clickable link (opens in your default browser) and, for groups with more than one skill, its own three-way control to switch every skill in that group at once — handy since one "install" from such a registry can easily unpack into a dozen+ individual skills. A group's control shows no state selected when its members disagree (e.g. some active, some off). Skills with no lock entry — installed by hand — show under "Ohne bekannte Quelle" with no link, same as before this feature existed.
 - Per-skill copy buttons for two ready-to-paste prompts, for toggling a skill in an already-running Claude Code chat (folder moves only take effect in new sessions):
   - **Activate**: `Lies <full path to SKILL.md> und wende diesen Skill ab jetzt an.`
   - **Ignore**: `Ignoriere ab sofort den Skill <name> vollständig.`
@@ -21,7 +22,7 @@ Built with Tauri v2, React, Tailwind v4, and shadcn/ui.
 - Manual refresh button, since the list is only read on launch/toggle.
 - Follows the OS light/dark theme; remembers window size and position.
 
-All filesystem/settings access happens in the Rust backend — the frontend has no direct file access and only talks to the four exposed commands (`list_skills`, `set_skill_enabled`, `set_skill_manual_only`, `read_env`). `set_skill_manual_only` never rewrites `settings.json` wholesale; it patches the `skillOverrides` key in place (with `serde_json`'s `preserve_order` feature, so the file's key order doesn't churn) and a mutex serializes concurrent writes.
+All filesystem/settings access happens in the Rust backend — the frontend has no direct file access and only talks to the four exposed commands (`list_skills`, `set_skill_enabled`, `set_skill_manual_only`, `read_env`). `set_skill_manual_only` never rewrites `settings.json` wholesale; it patches the `skillOverrides` key in place (with `serde_json`'s `preserve_order` feature, so the file's key order doesn't churn) and a mutex serializes concurrent writes. Opening a repo link goes through `@tauri-apps/plugin-shell`'s `open()` (a plain `<a target="_blank">` gets blocked by Tauri's navigation guard) — scoped in `capabilities/default.json` to `^https://` only.
 
 ## Requirements
 

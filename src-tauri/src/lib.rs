@@ -25,6 +25,12 @@ struct Skill {
     /// it can actually see under ~/.claude/skills).
     manual_only: bool,
     linked: bool,
+    /// "owner/repo" this skill was installed from, if it's tracked in a
+    /// `~/.agents/.skill-lock.json` (used by some skill-registry tools). None for
+    /// skills placed by hand or via a tool that doesn't write that lock file.
+    source: Option<String>,
+    /// Clickable https URL for `source` (the lock file's `.git` remote, `.git` stripped).
+    source_url: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -107,10 +113,46 @@ fn strip_quotes(s: &str) -> &str {
     }
 }
 
+/// Best-effort lookup of which GitHub repo each skill was installed from, read from
+/// `~/.agents/.skill-lock.json` (the lock file written by skill-registry tools that
+/// manage `~/.agents/skills` — the junction target for most of a user's skills).
+/// Returns an empty map if that file doesn't exist; that's the normal case for
+/// skills installed by hand, and the app just shows them with no known source.
+fn read_skill_lock() -> std::collections::HashMap<String, (String, String)> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(profile) = std::env::var("USERPROFILE") else {
+        return map;
+    };
+    let path = PathBuf::from(profile).join(".agents").join(".skill-lock.json");
+    let Some(lock) = read_json_file(&path) else {
+        return map;
+    };
+    let Some(entries) = lock.get("skills").and_then(Value::as_object) else {
+        return map;
+    };
+    for (key, entry) in entries {
+        // Lock keys can use "plugin::skill"; the on-disk folder name is "plugin-skill".
+        let folder_name = key.replace("::", "-");
+        let source = entry.get("source").and_then(Value::as_str).unwrap_or("");
+        if source.is_empty() {
+            continue;
+        }
+        let source_url = entry
+            .get("sourceUrl")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim_end_matches(".git")
+            .to_string();
+        map.insert(folder_name, (source.to_string(), source_url));
+    }
+    map
+}
+
 fn read_skills_in(
     dir: &Path,
     enabled: bool,
     overrides: &serde_json::Map<String, Value>,
+    sources: &std::collections::HashMap<String, (String, String)>,
 ) -> Vec<Skill> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
@@ -134,6 +176,10 @@ fn read_skills_in(
             .unwrap_or(false);
         let manual_only =
             enabled && overrides.get(&name).and_then(Value::as_str) == Some("user-invocable-only");
+        let (source, source_url) = match sources.get(&name) {
+            Some((s, u)) => (Some(s.clone()), Some(u.clone())),
+            None => (None, None),
+        };
 
         let skill_md = path.join("SKILL.md");
         let (description, skill_md_path) = match fs::read_to_string(&skill_md) {
@@ -148,6 +194,8 @@ fn read_skills_in(
             enabled,
             manual_only,
             linked,
+            source,
+            source_url,
         });
     }
     skills
@@ -167,9 +215,10 @@ fn list_skills() -> Result<Vec<Skill>, String> {
         .and_then(|v| v.get("skillOverrides").cloned())
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
+    let sources = read_skill_lock();
 
-    let mut skills = read_skills_in(&base.join("skills"), true, &overrides);
-    skills.extend(read_skills_in(&disabled_dir, false, &overrides));
+    let mut skills = read_skills_in(&base.join("skills"), true, &overrides, &sources);
+    skills.extend(read_skills_in(&disabled_dir, false, &overrides, &sources));
     skills.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(skills)
 }
@@ -384,6 +433,7 @@ fn read_env() -> Result<EnvInfo, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(

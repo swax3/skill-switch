@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
+import { open } from "@tauri-apps/plugin-shell"
 
 export type Skill = {
   name: string
@@ -8,6 +9,9 @@ export type Skill = {
   /** skillOverrides[name] === "user-invocable-only" — only meaningful while enabled. */
   manualOnly: boolean
   linked: boolean
+  /** "owner/repo" from ~/.agents/.skill-lock.json, if this skill is tracked there. */
+  source: string | null
+  sourceUrl: string | null
 }
 
 export type McpServerInfo = {
@@ -60,6 +64,16 @@ export async function readEnv(): Promise<EnvInfo> {
   return invoke<EnvInfo>("read_env")
 }
 
+// Tauri blocks in-webview navigation to external origins by default; opening a repo
+// link has to go through the shell plugin so it launches the OS's default browser.
+export async function openExternal(url: string): Promise<void> {
+  if (!isTauri) {
+    window.open(url, "_blank", "noopener,noreferrer")
+    return
+  }
+  await open(url)
+}
+
 // Dev-mock data so the UI can be previewed in a plain browser (no Tauri backend attached).
 const mockSkills: Skill[] = [
   {
@@ -69,6 +83,8 @@ const mockSkills: Skill[] = [
     enabled: true,
     manualOnly: false,
     linked: true,
+    source: "blader/humanizer",
+    sourceUrl: "https://github.com/blader/humanizer",
   },
   {
     name: "playwright-cli",
@@ -77,6 +93,8 @@ const mockSkills: Skill[] = [
     enabled: true,
     manualOnly: true,
     linked: false,
+    source: null,
+    sourceUrl: null,
   },
   {
     name: "gsap-core",
@@ -85,6 +103,18 @@ const mockSkills: Skill[] = [
     enabled: false,
     manualOnly: false,
     linked: true,
+    source: "greensock/gsap-skills",
+    sourceUrl: "https://github.com/greensock/gsap-skills",
+  },
+  {
+    name: "gsap-utils",
+    description: "gsap.utils helpers — clamp, mapRange, random, snap, toArray, wrap.",
+    skillMdPath: "C:\\Users\\you\\.claude\\skills\\gsap-utils\\SKILL.md",
+    enabled: true,
+    manualOnly: false,
+    linked: true,
+    source: "greensock/gsap-skills",
+    sourceUrl: "https://github.com/greensock/gsap-skills",
   },
 ]
 

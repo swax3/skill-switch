@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
-import { ClipboardCopy, ClipboardX, Link2, RefreshCw, Search } from "lucide-react"
+import { ClipboardCopy, ClipboardX, ExternalLink, Link2, RefreshCw, Search } from "lucide-react"
 import { toast } from "sonner"
-import type { Skill } from "@/lib/api"
+import { openExternal, type Skill } from "@/lib/api"
 import { Input } from "@/components/ui/input"
 import {
   Tooltip,
@@ -18,11 +18,35 @@ export function skillState(skill: Skill): SkillState {
   return "active"
 }
 
+type SourceGroup = {
+  key: string
+  source: string | null
+  sourceUrl: string | null
+  skills: Skill[]
+}
+
+const UNKNOWN_GROUP_KEY = "￿-unknown" // sorts last
+
+function buildGroups(skills: Skill[]): SourceGroup[] {
+  const byKey = new Map<string, SourceGroup>()
+  for (const skill of skills) {
+    const key = skill.source ?? UNKNOWN_GROUP_KEY
+    let group = byKey.get(key)
+    if (!group) {
+      group = { key, source: skill.source, sourceUrl: skill.sourceUrl, skills: [] }
+      byKey.set(key, group)
+    }
+    group.skills.push(skill)
+  }
+  return [...byKey.values()].sort((a, b) => a.key.localeCompare(b.key))
+}
+
 type SkillListProps = {
   skills: Skill[]
   loading: boolean
   pending: Set<string>
   onStateChange: (skill: Skill, next: SkillState) => void
+  onGroupStateChange: (skills: Skill[], next: SkillState) => void
   onRefresh: () => void
 }
 
@@ -43,19 +67,28 @@ async function copy(text: string, successMessage: string) {
   }
 }
 
-export function SkillList({ skills, loading, pending, onStateChange, onRefresh }: SkillListProps) {
+export function SkillList({
+  skills,
+  loading,
+  pending,
+  onStateChange,
+  onGroupStateChange,
+  onRefresh,
+}: SkillListProps) {
   const [query, setQuery] = useState("")
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return skills
     return skills.filter(
-      (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        s.description.toLowerCase().includes(q) ||
+        s.source?.toLowerCase().includes(q)
     )
   }, [skills, query])
 
-  const active = filtered.filter((s) => s.enabled)
-  const inactive = filtered.filter((s) => !s.enabled)
+  const groups = useMemo(() => buildGroups(filtered), [filtered])
 
   return (
     <div className="flex h-full flex-col gap-4 p-6">
@@ -65,7 +98,7 @@ export function SkillList({ skills, loading, pending, onStateChange, onRefresh }
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Skills durchsuchen…"
+            placeholder="Skills oder Quelle durchsuchen…"
             className="rounded-full bg-card pl-9 shadow-none"
           />
         </div>
@@ -79,37 +112,70 @@ export function SkillList({ skills, loading, pending, onStateChange, onRefresh }
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Skills werden geladen…</p>
-      ) : filtered.length === 0 ? (
+      ) : groups.length === 0 ? (
         <p className="text-sm text-muted-foreground">Keine Skills gefunden.</p>
       ) : (
         <div className="flex-1 space-y-6 overflow-y-auto">
-          <SkillGroup title="Aktiv" skills={active} pending={pending} onStateChange={onStateChange} />
-          <SkillGroup title="Inaktiv" skills={inactive} pending={pending} onStateChange={onStateChange} />
+          {groups.map((group) => (
+            <SkillGroupSection
+              key={group.key}
+              group={group}
+              pending={pending}
+              onStateChange={onStateChange}
+              onGroupStateChange={onGroupStateChange}
+            />
+          ))}
         </div>
       )}
     </div>
   )
 }
 
-function SkillGroup({
-  title,
-  skills,
+function SkillGroupSection({
+  group,
   pending,
   onStateChange,
+  onGroupStateChange,
 }: {
-  title: string
-  skills: Skill[]
+  group: SourceGroup
   pending: Set<string>
   onStateChange: (skill: Skill, next: SkillState) => void
+  onGroupStateChange: (skills: Skill[], next: SkillState) => void
 }) {
-  if (skills.length === 0) return null
+  const anyPending = group.skills.some((s) => pending.has(s.name))
   return (
     <section>
-      <h2 className="mb-2 px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
+      <div className="mb-2 flex items-center justify-between gap-2 px-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          {group.source && group.sourceUrl ? (
+            <button
+              type="button"
+              onClick={() => openExternal(group.sourceUrl!)}
+              className="inline-flex items-center gap-1 truncate text-xs font-semibold tracking-wide text-muted-foreground uppercase hover:text-primary hover:underline"
+            >
+              {group.source}
+              <ExternalLink className="size-3 shrink-0" />
+            </button>
+          ) : (
+            <span className="truncate text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              Ohne bekannte Quelle
+            </span>
+          )}
+          <span className="shrink-0 text-xs text-muted-foreground">
+            · {group.skills.length}
+          </span>
+        </div>
+        {group.skills.length > 1 && (
+          <StateSegment
+            value={groupState(group.skills)}
+            disabled={anyPending}
+            onChange={(next) => onGroupStateChange(group.skills, next)}
+            label={`Alle ${group.skills.length} Skills aus ${group.source ?? "dieser Gruppe"} umschalten`}
+          />
+        )}
+      </div>
       <div className="overflow-hidden rounded-[10px] border border-border bg-card">
-        {skills.map((skill, i) => (
+        {group.skills.map((skill, i) => (
           <div key={skill.name}>
             {i > 0 && <div className="ml-4 h-px bg-border" />}
             <SkillRow skill={skill} disabled={pending.has(skill.name)} onStateChange={onStateChange} />
@@ -118,6 +184,11 @@ function SkillGroup({
       </div>
     </section>
   )
+}
+
+function groupState(skills: Skill[]): SkillState | "mixed" {
+  const states = new Set(skills.map(skillState))
+  return states.size === 1 ? [...states][0] : "mixed"
 }
 
 function SkillRow({
@@ -165,6 +236,7 @@ function SkillRow({
         value={skillState(skill)}
         disabled={disabled}
         onChange={(next) => onStateChange(skill, next)}
+        label={`${skill.name}: Zustand ändern`}
       />
     </div>
   )
@@ -184,13 +256,19 @@ function StateSegment({
   value,
   disabled,
   onChange,
+  label,
 }: {
-  value: SkillState
+  value: SkillState | "mixed"
   disabled?: boolean
   onChange: (next: SkillState) => void
+  label: string
 }) {
   return (
-    <div className="inline-flex shrink-0 rounded-full bg-muted p-0.5">
+    <div
+      role="group"
+      aria-label={label}
+      className="inline-flex shrink-0 rounded-full bg-muted p-0.5"
+    >
       {STATE_OPTIONS.map((opt) => (
         <Tooltip key={opt.value}>
           <TooltipTrigger asChild>

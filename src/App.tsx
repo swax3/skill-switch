@@ -48,26 +48,60 @@ function App() {
     disabled: "deaktiviert",
   }
 
-  async function handleStateChange(skill: Skill, next: SkillState) {
-    setPending((p) => new Set(p).add(skill.name))
-    try {
-      if (next === "disabled") {
-        await setSkillEnabled(skill.name, false)
-      } else {
-        if (!skill.enabled) await setSkillEnabled(skill.name, true)
-        await setSkillManualOnly(skill.name, next === "manual")
-      }
-      toast.success(`„${skill.name}" ist jetzt ${STATE_LABEL[next]}. Wirkt ab der nächsten Claude-Code-Session.`)
-      await refreshSkills()
-    } catch (e) {
-      toast.error(String(e))
-    } finally {
-      setPending((p) => {
-        const rest = new Set(p)
-        rest.delete(skill.name)
-        return rest
-      })
+  // Core transition, no pending-tracking/toast — shared by the single-skill and
+  // group handlers below so the two don't drift out of sync.
+  async function applyState(skill: Skill, next: SkillState) {
+    if (next === "disabled") {
+      await setSkillEnabled(skill.name, false)
+      return
     }
+    if (!skill.enabled) await setSkillEnabled(skill.name, true)
+    await setSkillManualOnly(skill.name, next === "manual")
+  }
+
+  function withPending<T>(names: string[], fn: () => Promise<T>) {
+    setPending((p) => {
+      const next = new Set(p)
+      names.forEach((n) => next.add(n))
+      return next
+    })
+    return fn().finally(() => {
+      setPending((p) => {
+        const next = new Set(p)
+        names.forEach((n) => next.delete(n))
+        return next
+      })
+    })
+  }
+
+  async function handleStateChange(skill: Skill, next: SkillState) {
+    await withPending([skill.name], async () => {
+      try {
+        await applyState(skill, next)
+        toast.success(`„${skill.name}" ist jetzt ${STATE_LABEL[next]}. Wirkt ab der nächsten Claude-Code-Session.`)
+        await refreshSkills()
+      } catch (e) {
+        toast.error(String(e))
+      }
+    })
+  }
+
+  async function handleGroupStateChange(groupSkills: Skill[], next: SkillState) {
+    await withPending(
+      groupSkills.map((s) => s.name),
+      async () => {
+        const results = await Promise.allSettled(groupSkills.map((s) => applyState(s, next)))
+        const failed = results.filter((r) => r.status === "rejected").length
+        if (failed === 0) {
+          toast.success(
+            `${groupSkills.length} Skills sind jetzt ${STATE_LABEL[next]}. Wirkt ab der nächsten Claude-Code-Session.`
+          )
+        } else {
+          toast.error(`${failed} von ${groupSkills.length} Skills konnten nicht umgestellt werden.`)
+        }
+        await refreshSkills()
+      }
+    )
   }
 
   return (
@@ -83,6 +117,7 @@ function App() {
                 loading={skillsLoading}
                 pending={pending}
                 onStateChange={handleStateChange}
+                onGroupStateChange={handleGroupStateChange}
                 onRefresh={refreshSkills}
               />
             ) : (
