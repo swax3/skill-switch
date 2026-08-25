@@ -3,7 +3,6 @@ import { ClipboardCopy, ClipboardX, Link2, RefreshCw, Search } from "lucide-reac
 import { toast } from "sonner"
 import type { Skill } from "@/lib/api"
 import { Input } from "@/components/ui/input"
-import { Switch } from "@/components/ui/switch"
 import {
   Tooltip,
   TooltipContent,
@@ -11,11 +10,19 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
+export type SkillState = "active" | "manual" | "disabled"
+
+export function skillState(skill: Skill): SkillState {
+  if (!skill.enabled) return "disabled"
+  if (skill.manualOnly) return "manual"
+  return "active"
+}
+
 type SkillListProps = {
   skills: Skill[]
   loading: boolean
   pending: Set<string>
-  onToggle: (skill: Skill) => void
+  onStateChange: (skill: Skill, next: SkillState) => void
   onRefresh: () => void
 }
 
@@ -36,7 +43,7 @@ async function copy(text: string, successMessage: string) {
   }
 }
 
-export function SkillList({ skills, loading, pending, onToggle, onRefresh }: SkillListProps) {
+export function SkillList({ skills, loading, pending, onStateChange, onRefresh }: SkillListProps) {
   const [query, setQuery] = useState("")
 
   const filtered = useMemo(() => {
@@ -76,8 +83,8 @@ export function SkillList({ skills, loading, pending, onToggle, onRefresh }: Ski
         <p className="text-sm text-muted-foreground">Keine Skills gefunden.</p>
       ) : (
         <div className="flex-1 space-y-6 overflow-y-auto">
-          <SkillGroup title="Aktiv" skills={active} pending={pending} onToggle={onToggle} />
-          <SkillGroup title="Inaktiv" skills={inactive} pending={pending} onToggle={onToggle} />
+          <SkillGroup title="Aktiv" skills={active} pending={pending} onStateChange={onStateChange} />
+          <SkillGroup title="Inaktiv" skills={inactive} pending={pending} onStateChange={onStateChange} />
         </div>
       )}
     </div>
@@ -88,12 +95,12 @@ function SkillGroup({
   title,
   skills,
   pending,
-  onToggle,
+  onStateChange,
 }: {
   title: string
   skills: Skill[]
   pending: Set<string>
-  onToggle: (skill: Skill) => void
+  onStateChange: (skill: Skill, next: SkillState) => void
 }) {
   if (skills.length === 0) return null
   return (
@@ -105,7 +112,7 @@ function SkillGroup({
         {skills.map((skill, i) => (
           <div key={skill.name}>
             {i > 0 && <div className="ml-4 h-px bg-border" />}
-            <SkillRow skill={skill} disabled={pending.has(skill.name)} onToggle={onToggle} />
+            <SkillRow skill={skill} disabled={pending.has(skill.name)} onStateChange={onStateChange} />
           </div>
         ))}
       </div>
@@ -116,11 +123,11 @@ function SkillGroup({
 function SkillRow({
   skill,
   disabled,
-  onToggle,
+  onStateChange,
 }: {
   skill: Skill
   disabled: boolean
-  onToggle: (skill: Skill) => void
+  onStateChange: (skill: Skill, next: SkillState) => void
 }) {
   return (
     <div className="flex items-center gap-3 px-4 py-2.5">
@@ -154,12 +161,57 @@ function SkillRow({
         onClick={() => copy(ignorePrompt(skill), "Ignorieren-Prompt kopiert.")}
       />
 
-      <Switch
-        checked={skill.enabled}
+      <StateSegment
+        value={skillState(skill)}
         disabled={disabled}
-        onCheckedChange={() => onToggle(skill)}
-        aria-label={`${skill.name} ${skill.enabled ? "deaktivieren" : "aktivieren"}`}
+        onChange={(next) => onStateChange(skill, next)}
       />
+    </div>
+  )
+}
+
+const STATE_OPTIONS: { value: SkillState; label: string; tooltip: string }[] = [
+  { value: "active", label: "Aktiv", tooltip: "Claude sieht den Skill und nutzt ihn automatisch." },
+  {
+    value: "manual",
+    label: "Manuell",
+    tooltip: "Claude schlägt den Skill nicht mehr vor, nur noch per /name aufrufbar.",
+  },
+  { value: "disabled", label: "Aus", tooltip: "Skill-Ordner nach skills-disabled verschoben." },
+]
+
+function StateSegment({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: SkillState
+  disabled?: boolean
+  onChange: (next: SkillState) => void
+}) {
+  return (
+    <div className="inline-flex shrink-0 rounded-full bg-muted p-0.5">
+      {STATE_OPTIONS.map((opt) => (
+        <Tooltip key={opt.value}>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              disabled={disabled}
+              aria-pressed={value === opt.value}
+              onClick={() => value !== opt.value && onChange(opt.value)}
+              className={cn(
+                "rounded-full px-2.5 py-1 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+                value === opt.value
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {opt.label}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{opt.tooltip}</TooltipContent>
+        </Tooltip>
+      ))}
     </div>
   )
 }

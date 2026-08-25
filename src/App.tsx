@@ -2,8 +2,15 @@ import { useEffect, useState } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { Info, Minus, Plug, Puzzle, Square, X } from "lucide-react"
 import { toast } from "sonner"
-import { listSkills, readEnv, setSkillEnabled, type EnvInfo, type Skill } from "@/lib/api"
-import { SkillList } from "@/components/skill-list"
+import {
+  listSkills,
+  readEnv,
+  setSkillEnabled,
+  setSkillManualOnly,
+  type EnvInfo,
+  type Skill,
+} from "@/lib/api"
+import { SkillList, type SkillState } from "@/components/skill-list"
 import { ConfigPanel } from "@/components/config-panel"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -35,21 +42,30 @@ function App() {
       .finally(() => setEnvLoading(false))
   }, [])
 
-  async function handleToggle(skill: Skill) {
+  const STATE_LABEL: Record<SkillState, string> = {
+    active: "aktiv",
+    manual: "nur manuell (per /name aufrufbar)",
+    disabled: "deaktiviert",
+  }
+
+  async function handleStateChange(skill: Skill, next: SkillState) {
     setPending((p) => new Set(p).add(skill.name))
     try {
-      await setSkillEnabled(skill.name, !skill.enabled)
-      toast.success(
-        `„${skill.name}" ${skill.enabled ? "deaktiviert" : "aktiviert"}. Wirkt ab der nächsten Claude-Code-Session.`
-      )
+      if (next === "disabled") {
+        await setSkillEnabled(skill.name, false)
+      } else {
+        if (!skill.enabled) await setSkillEnabled(skill.name, true)
+        await setSkillManualOnly(skill.name, next === "manual")
+      }
+      toast.success(`„${skill.name}" ist jetzt ${STATE_LABEL[next]}. Wirkt ab der nächsten Claude-Code-Session.`)
       await refreshSkills()
     } catch (e) {
       toast.error(String(e))
     } finally {
       setPending((p) => {
-        const next = new Set(p)
-        next.delete(skill.name)
-        return next
+        const rest = new Set(p)
+        rest.delete(skill.name)
+        return rest
       })
     }
   }
@@ -66,7 +82,7 @@ function App() {
                 skills={skills}
                 loading={skillsLoading}
                 pending={pending}
-                onToggle={handleToggle}
+                onStateChange={handleStateChange}
                 onRefresh={refreshSkills}
               />
             ) : (
@@ -151,8 +167,8 @@ function Sidebar({ view, onChange }: { view: View; onChange: (v: View) => void }
       <div className="flex items-start gap-1.5 rounded-lg px-2 py-2 text-[11px] leading-snug text-muted-foreground">
         <Info className="mt-0.5 size-3.5 shrink-0" />
         <p>
-          Harte Änderungen gelten ab der nächsten Claude-Code-Session. In laufenden Chats: die
-          Kopier-Buttons nutzen.
+          Alle drei Zustände wirken erst in der nächsten Claude-Code-Session. In laufenden Chats:
+          die Kopier-Buttons nutzen.
         </p>
       </div>
     </aside>

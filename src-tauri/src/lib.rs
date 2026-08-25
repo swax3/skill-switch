@@ -4,8 +4,13 @@ use std::fs;
 use std::io;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+/// Serializes read-modify-write access to settings.json across concurrent commands
+/// (e.g. two skills toggled to "manual" within the same moment would otherwise race).
+static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
 // camelCase so struct fields line up with the TypeScript types without a manual mapper.
 #[derive(Serialize, Clone)]
@@ -15,6 +20,10 @@ struct Skill {
     description: String,
     skill_md_path: Option<String>,
     enabled: bool,
+    /// true if `skillOverrides[name] == "user-invocable-only"` in settings.json —
+    /// only meaningful while `enabled` (Claude Code only applies overrides to skills
+    /// it can actually see under ~/.claude/skills).
+    manual_only: bool,
     linked: bool,
 }
 
@@ -98,7 +107,11 @@ fn strip_quotes(s: &str) -> &str {
     }
 }
 
-fn read_skills_in(dir: &Path, enabled: bool) -> Vec<Skill> {
+fn read_skills_in(
+    dir: &Path,
+    enabled: bool,
+    overrides: &serde_json::Map<String, Value>,
+) -> Vec<Skill> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -119,6 +132,8 @@ fn read_skills_in(dir: &Path, enabled: bool) -> Vec<Skill> {
         let linked = fs::symlink_metadata(&path)
             .map(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
             .unwrap_or(false);
+        let manual_only =
+            enabled && overrides.get(&name).and_then(Value::as_str) == Some("user-invocable-only");
 
         let skill_md = path.join("SKILL.md");
         let (description, skill_md_path) = match fs::read_to_string(&skill_md) {
@@ -131,6 +146,7 @@ fn read_skills_in(dir: &Path, enabled: bool) -> Vec<Skill> {
             description,
             skill_md_path,
             enabled,
+            manual_only,
             linked,
         });
     }
@@ -144,8 +160,16 @@ fn list_skills() -> Result<Vec<Skill>, String> {
     fs::create_dir_all(&disabled_dir)
         .map_err(|e| format!("Konnte \"skills-disabled\" nicht anlegen: {e}"))?;
 
-    let mut skills = read_skills_in(&base.join("skills"), true);
-    skills.extend(read_skills_in(&disabled_dir, false));
+    // Best-effort: a missing/corrupt settings.json just means no overrides are shown,
+    // it doesn't stop the skill list from loading.
+    let overrides = read_settings()
+        .ok()
+        .and_then(|v| v.get("skillOverrides").cloned())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+
+    let mut skills = read_skills_in(&base.join("skills"), true, &overrides);
+    skills.extend(read_skills_in(&disabled_dir, false, &overrides));
     skills.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(skills)
 }
@@ -205,13 +229,88 @@ fn set_skill_enabled(name: String, enabled: bool) -> Result<(), String> {
         ));
     }
 
-    fs::rename(&src, &dst).map_err(|e| translate_move_error(&e, &name))
+    fs::rename(&src, &dst).map_err(|e| translate_move_error(&e, &name))?;
+
+    if !enabled {
+        // The skill no longer exists under ~/.claude/skills, so any override for it is
+        // inert. Best-effort tidy-up: don't fail the (already successful) move over it.
+        let _ = set_skill_override(&name, None);
+    }
+    Ok(())
 }
 
 fn read_json_file(path: &Path) -> Option<Value> {
     fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn settings_path() -> Result<PathBuf, String> {
+    Ok(claude_dir()?.join("settings.json"))
+}
+
+fn read_settings() -> Result<Value, String> {
+    let path = settings_path()?;
+    match fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s)
+            .map_err(|e| format!("settings.json ist kein gültiges JSON: {e}")),
+        Err(_) => Ok(Value::Object(serde_json::Map::new())), // missing file: start fresh
+    }
+}
+
+fn write_settings(value: &Value) -> Result<(), String> {
+    let path = settings_path()?;
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("Konnte settings.json nicht serialisieren: {e}"))?;
+    fs::write(&path, text).map_err(|e| format!("Konnte settings.json nicht schreiben: {e}"))
+}
+
+/// Pure JSON patch: set or remove `skillOverrides[name]`, leaving every other key
+/// untouched, and dropping the (now-empty) `skillOverrides` object if it was the last entry.
+fn apply_skill_override(mut settings: Value, name: &str, value: Option<&str>) -> Result<Value, String> {
+    let obj = settings
+        .as_object_mut()
+        .ok_or_else(|| "settings.json hat kein Objekt auf oberster Ebene.".to_string())?;
+    let overrides = obj
+        .entry("skillOverrides")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let overrides_obj = overrides
+        .as_object_mut()
+        .ok_or_else(|| "\"skillOverrides\" in settings.json ist kein Objekt.".to_string())?;
+
+    match value {
+        Some(v) => {
+            overrides_obj.insert(name.to_string(), Value::String(v.to_string()));
+        }
+        None => {
+            overrides_obj.remove(name);
+        }
+    }
+    if overrides_obj.is_empty() {
+        obj.remove("skillOverrides");
+    }
+    Ok(settings)
+}
+
+fn set_skill_override(name: &str, value: Option<&str>) -> Result<(), String> {
+    let _guard = SETTINGS_LOCK
+        .lock()
+        .map_err(|_| "Interner Sperr-Fehler.".to_string())?;
+    let settings = read_settings()?;
+    let settings = apply_skill_override(settings, name, value)?;
+    write_settings(&settings)
+}
+
+#[tauri::command]
+fn set_skill_manual_only(name: String, manual_only: bool) -> Result<(), String> {
+    validate_skill_name(&name)?;
+    let skill_path = claude_dir()?.join("skills").join(&name);
+    if fs::symlink_metadata(&skill_path).is_err() {
+        return Err(format!(
+            "\"{name}\" ist nicht aktiv. \"Nur manuell\" gilt nur für aktive Skills."
+        ));
+    }
+    set_skill_override(&name, manual_only.then_some("user-invocable-only"))
 }
 
 #[tauri::command]
@@ -295,7 +394,12 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_skills, set_skill_enabled, read_env])
+        .invoke_handler(tauri::generate_handler![
+            list_skills,
+            set_skill_enabled,
+            set_skill_manual_only,
+            read_env
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -350,5 +454,34 @@ mod tests {
         assert!(validate_skill_name("a\\b").is_err());
         assert!(validate_skill_name("").is_err());
         assert!(validate_skill_name("normal-skill").is_ok());
+    }
+
+    #[test]
+    fn override_sets_and_clears_key_without_touching_siblings() {
+        let settings = serde_json::json!({ "theme": "dark" });
+        let s2 = apply_skill_override(settings, "foo", Some("user-invocable-only")).unwrap();
+        assert_eq!(s2["skillOverrides"]["foo"], "user-invocable-only");
+        assert_eq!(s2["theme"], "dark");
+
+        let s3 = apply_skill_override(s2, "foo", None).unwrap();
+        assert!(s3.get("skillOverrides").is_none(), "empty skillOverrides should be dropped");
+        assert_eq!(s3["theme"], "dark");
+    }
+
+    #[test]
+    fn override_preserves_other_skill_overrides() {
+        let settings = serde_json::json!({ "skillOverrides": { "bar": "off" } });
+        let s2 = apply_skill_override(settings, "foo", Some("user-invocable-only")).unwrap();
+        assert_eq!(s2["skillOverrides"]["foo"], "user-invocable-only");
+        assert_eq!(s2["skillOverrides"]["bar"], "off");
+
+        let s3 = apply_skill_override(s2, "foo", None).unwrap();
+        assert!(s3["skillOverrides"].get("foo").is_none());
+        assert_eq!(s3["skillOverrides"]["bar"], "off", "removing one entry must not drop siblings");
+    }
+
+    #[test]
+    fn override_rejects_non_object_settings_root() {
+        assert!(apply_skill_override(serde_json::json!([1, 2]), "foo", Some("off")).is_err());
     }
 }

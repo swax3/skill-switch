@@ -5,6 +5,8 @@ export type Skill = {
   description: string
   skillMdPath: string | null
   enabled: boolean
+  /** skillOverrides[name] === "user-invocable-only" — only meaningful while enabled. */
+  manualOnly: boolean
   linked: boolean
 }
 
@@ -35,10 +37,22 @@ export async function listSkills(): Promise<Skill[]> {
 export async function setSkillEnabled(name: string, enabled: boolean): Promise<void> {
   if (!isTauri) {
     const skill = mockSkills.find((s) => s.name === name)
-    if (skill) skill.enabled = enabled
+    if (skill) {
+      skill.enabled = enabled
+      if (!enabled) skill.manualOnly = false
+    }
     return
   }
   await invoke("set_skill_enabled", { name, enabled })
+}
+
+export async function setSkillManualOnly(name: string, manualOnly: boolean): Promise<void> {
+  if (!isTauri) {
+    const skill = mockSkills.find((s) => s.name === name)
+    if (skill) skill.manualOnly = manualOnly
+    return
+  }
+  await invoke("set_skill_manual_only", { name, manualOnly })
 }
 
 export async function readEnv(): Promise<EnvInfo> {
@@ -53,6 +67,7 @@ const mockSkills: Skill[] = [
     description: "Rewrite AI-sounding text so it reads naturally without changing what it says.",
     skillMdPath: "C:\\Users\\you\\.claude\\skills\\humanizer\\SKILL.md",
     enabled: true,
+    manualOnly: false,
     linked: true,
   },
   {
@@ -60,6 +75,7 @@ const mockSkills: Skill[] = [
     description: "Automate browser interactions, test web pages and work with Playwright tests.",
     skillMdPath: "C:\\Users\\you\\.claude\\skills\\playwright-cli\\SKILL.md",
     enabled: true,
+    manualOnly: true,
     linked: false,
   },
   {
@@ -67,6 +83,7 @@ const mockSkills: Skill[] = [
     description: "Official GSAP skill for the core API.",
     skillMdPath: "C:\\Users\\you\\.claude\\skills\\gsap-core\\SKILL.md",
     enabled: false,
+    manualOnly: false,
     linked: true,
   },
 ]

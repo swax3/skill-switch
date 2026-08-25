@@ -7,9 +7,13 @@ Built with Tauri v2, React, Tailwind v4, and shadcn/ui.
 ## What it does
 
 - Lists every skill folder in `%USERPROFILE%\.claude\skills` (active) and `%USERPROFILE%\.claude\skills-disabled` (inactive, created automatically if missing).
-- Shows each skill's name and description (parsed from its `SKILL.md` frontmatter), with a toggle switch.
-- Toggling **moves** the skill folder between the two directories — atomically, and only ever a move. It never deletes anything, and refuses (with a clear error) if a folder with the same name already exists at the destination.
+- Shows each skill's name and description (parsed from its `SKILL.md` frontmatter), with a three-way state control:
+  - **Aktiv** — normal, Claude sees and auto-invokes it.
+  - **Manuell** — writes `skillOverrides[name] = "user-invocable-only"` to `~/.claude/settings.json` (patches just that one key, every other setting is left untouched). Claude no longer suggests or auto-invokes the skill, but it's still callable by typing `/name`.
+  - **Aus** — **moves** the skill folder to `skills-disabled/`. Atomic, only ever a move, never deletes anything, and refuses (with a clear error) if a folder with the same name already exists at the destination.
+- Switching to **Aus** also removes any leftover `skillOverrides` entry for that skill (best-effort tidy-up); switching a skill back to **Aktiv** clears the override too.
 - Works correctly with symlinked/junction skill folders (e.g. skills managed by a package manager) — the link itself moves, its target is untouched.
+- Both mechanisms only take effect in a **new** Claude Code session — `settings.json` is read once at launch, same as the filesystem. There's no way to hot-reload either mid-chat, which is exactly what the copy-prompt buttons below are for.
 - Per-skill copy buttons for two ready-to-paste prompts, for toggling a skill in an already-running Claude Code chat (folder moves only take effect in new sessions):
   - **Activate**: `Lies <full path to SKILL.md> und wende diesen Skill ab jetzt an.`
   - **Ignore**: `Ignoriere ab sofort den Skill <name> vollständig.`
@@ -17,7 +21,7 @@ Built with Tauri v2, React, Tailwind v4, and shadcn/ui.
 - Manual refresh button, since the list is only read on launch/toggle.
 - Follows the OS light/dark theme; remembers window size and position.
 
-All filesystem access happens in the Rust backend — the frontend has no direct file access and only talks to the three exposed commands (`list_skills`, `set_skill_enabled`, `read_env`).
+All filesystem/settings access happens in the Rust backend — the frontend has no direct file access and only talks to the four exposed commands (`list_skills`, `set_skill_enabled`, `set_skill_manual_only`, `read_env`). `set_skill_manual_only` never rewrites `settings.json` wholesale; it patches the `skillOverrides` key in place (with `serde_json`'s `preserve_order` feature, so the file's key order doesn't churn) and a mutex serializes concurrent writes.
 
 ## Requirements
 
@@ -55,7 +59,7 @@ Produces an MSI and an NSIS installer under `src-tauri/target/release/bundle/`.
 src/                 React frontend (no filesystem access)
   components/         SkillList, ConfigPanel, shadcn/ui primitives
   lib/api.ts          Typed wrapper around the Tauri commands
-src-tauri/src/lib.rs  Rust backend: list_skills, set_skill_enabled, read_env
+src-tauri/src/lib.rs  Rust backend: list_skills, set_skill_enabled, set_skill_manual_only, read_env
 ```
 
 ## License
