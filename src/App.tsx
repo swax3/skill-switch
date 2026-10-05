@@ -6,10 +6,13 @@ import {
   addOmnirouteProject,
   analyzeUsage,
   checkGlobalRoute,
+  deleteProfile,
+  listProfiles,
   listSkills,
   readEnv,
   readOmniroute,
   removeOmnirouteProject,
+  saveProfile,
   setGatewayDiscovery,
   setOmnirouteConfig,
   setProjectRoute,
@@ -18,10 +21,11 @@ import {
   type EnvInfo,
   type GlobalRouteWarning,
   type OmniState,
+  type Profile,
   type Skill,
   type UsageReport,
 } from "@/lib/api"
-import { SkillList, type SkillState } from "@/components/skill-list"
+import { skillState, SkillList, type SkillState } from "@/components/skill-list"
 import { ConfigPanel } from "@/components/config-panel"
 import { OmniroutePanel } from "@/components/omniroute-panel"
 import { UsagePanel } from "@/components/usage-panel"
@@ -51,6 +55,7 @@ function App() {
   const [envLoading, setEnvLoading] = useState(true)
   const [omni, setOmni] = useState<OmniState | null>(null)
   const [omniLoading, setOmniLoading] = useState(true)
+  const [profiles, setProfiles] = useState<Profile[]>([])
   const [globalWarn, setGlobalWarn] = useState<GlobalRouteWarning | null>(null)
   const [usage, setUsage] = useState<UsageReport | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
@@ -87,6 +92,9 @@ function App() {
   useEffect(() => {
     refreshSkills()
     refreshOmni()
+    listProfiles()
+      .then(setProfiles)
+      .catch((e) => toast.error(String(e)))
     readEnv()
       .then(setEnv)
       .catch((e) => toast.error(String(e)))
@@ -154,6 +162,72 @@ function App() {
           )
         } else {
           toast.error(`${failed} von ${groupSkills.length} Skills konnten nicht umgestellt werden.`)
+        }
+        await refreshSkills()
+      }
+    )
+  }
+
+  async function handleSaveProfile(name: string) {
+    const trimmed = name.trim()
+    const overwrite = profiles.some((p) => p.name.toLowerCase() === trimmed.toLowerCase())
+    const snapshot: Record<string, string> = {}
+    skills.forEach((s) => {
+      snapshot[s.name] = skillState(s)
+    })
+    try {
+      const next = await saveProfile(trimmed, snapshot)
+      setProfiles(next)
+      toast.success(
+        overwrite
+          ? `Profil „${trimmed}" überschrieben (${Object.keys(snapshot).length} Skills).`
+          : `Profil „${trimmed}" gespeichert (${Object.keys(snapshot).length} Skills).`
+      )
+      return next
+    } catch (e) {
+      toast.error(String(e))
+      return profiles
+    }
+  }
+
+  async function handleDeleteProfile(name: string) {
+    try {
+      const next = await deleteProfile(name)
+      setProfiles(next)
+      toast.success(`Profil „${name}" gelöscht.`)
+    } catch (e) {
+      toast.error(String(e))
+    }
+  }
+
+  async function handleApplyProfile(profile: Profile) {
+    const toApply: { skill: Skill; state: SkillState }[] = []
+    let unchanged = 0
+    let notInstalled = 0
+    for (const [name, state] of Object.entries(profile.skills)) {
+      const skill = skills.find((s) => s.name === name)
+      if (!skill) {
+        notInstalled++
+        continue
+      }
+      if (skillState(skill) === state) {
+        unchanged++
+        continue
+      }
+      toApply.push({ skill, state: state as SkillState })
+    }
+
+    await withPending(
+      toApply.map((a) => a.skill.name),
+      async () => {
+        const results = await Promise.allSettled(toApply.map((a) => applyState(a.skill, a.state)))
+        const failed = results.filter((r) => r.status === "rejected").length
+        if (failed === 0) {
+          toast.success(
+            `Profil „${profile.name}" angewendet: ${toApply.length} Skills umgestellt, ${unchanged} unverändert, ${notInstalled} nicht installiert. Wirkt ab der nächsten Claude-Code-Session.`
+          )
+        } else {
+          toast.error(`${failed} von ${toApply.length} Skills konnten nicht umgestellt werden.`)
         }
         await refreshSkills()
       }
@@ -229,6 +303,10 @@ function App() {
                 usage={usage?.skillUsage ?? null}
                 usageLoading={usageLoading}
                 onLoadUsage={refreshUsage}
+                profiles={profiles}
+                onApplyProfile={handleApplyProfile}
+                onSaveProfile={handleSaveProfile}
+                onDeleteProfile={handleDeleteProfile}
               />
             ) : view === "config" ? (
               <ConfigPanel

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { ClipboardCopy, ClipboardX, ExternalLink, Link2, RefreshCw, Search } from "lucide-react"
 import { toast } from "sonner"
-import { openExternal, type AttributionUsage, type Skill } from "@/lib/api"
+import { openExternal, type AttributionUsage, type Profile, type Skill } from "@/lib/api"
 import { Input } from "@/components/ui/input"
 import {
   Tooltip,
@@ -52,6 +52,10 @@ type SkillListProps = {
   usage: AttributionUsage[] | null
   usageLoading: boolean
   onLoadUsage: () => void
+  profiles: Profile[]
+  onApplyProfile: (profile: Profile) => Promise<void>
+  onSaveProfile: (name: string) => Promise<Profile[]>
+  onDeleteProfile: (name: string) => Promise<void>
 }
 
 const germanDate = (iso: string) => {
@@ -86,6 +90,10 @@ export function SkillList({
   usage,
   usageLoading,
   onLoadUsage,
+  profiles,
+  onApplyProfile,
+  onSaveProfile,
+  onDeleteProfile,
 }: SkillListProps) {
   const [query, setQuery] = useState("")
 
@@ -132,6 +140,15 @@ export function SkillList({
         )}
       </div>
 
+      <ProfileRow
+        profiles={profiles}
+        skills={skills}
+        pending={pending}
+        onApplyProfile={onApplyProfile}
+        onSaveProfile={onSaveProfile}
+        onDeleteProfile={onDeleteProfile}
+      />
+
       {loading ? (
         <p className="text-sm text-muted-foreground">Skills werden geladen…</p>
       ) : groups.length === 0 ? (
@@ -150,6 +167,196 @@ export function SkillList({
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function profileSummary(profile: Profile, skills: Skill[]): string {
+  const counts: Record<string, number> = { active: 0, manual: 0, disabled: 0 }
+  for (const state of Object.values(profile.skills)) {
+    if (state in counts) counts[state]++
+  }
+  const missing = Object.keys(profile.skills).filter((name) => !skills.some((s) => s.name === name)).length
+  const base = `${counts.active} aktiv · ${counts.manual} manuell · ${counts.disabled} aus`
+  return missing > 0 ? `${base} · ${missing} nicht installiert` : base
+}
+
+function ProfileRow({
+  profiles,
+  skills,
+  pending,
+  onApplyProfile,
+  onSaveProfile,
+  onDeleteProfile,
+}: {
+  profiles: Profile[]
+  skills: Skill[]
+  pending: Set<string>
+  onApplyProfile: (profile: Profile) => Promise<void>
+  onSaveProfile: (name: string) => Promise<Profile[]>
+  onDeleteProfile: (name: string) => Promise<void>
+}) {
+  const [selected, setSelected] = useState("")
+  const [applying, setApplying] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
+  const [nameInput, setNameInput] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const anyPending = pending.size > 0
+  const current = profiles.find((p) => p.name.toLowerCase() === selected.toLowerCase()) ?? null
+
+  async function handleApply() {
+    if (!current || anyPending) return
+    setApplying(true)
+    try {
+      await onApplyProfile(current)
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  async function handleSaveNew() {
+    const trimmed = nameInput.trim()
+    if (!trimmed) return
+    setSaving(true)
+    try {
+      const next = await onSaveProfile(trimmed)
+      const saved = next.find((p) => p.name.toLowerCase() === trimmed.toLowerCase())
+      setSelected(saved ? saved.name : trimmed)
+      setNameInput("")
+      setAddOpen(false)
+    } catch {
+      // onSaveProfile already reports the error via toast
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!current) return
+    await onDeleteProfile(current.name)
+    setSelected("")
+    setConfirmDelete(false)
+  }
+
+  return (
+    <div className="flex shrink-0 flex-col gap-1.5 rounded-[10px] border border-border bg-card px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="shrink-0 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          Profile
+        </span>
+
+        {profiles.length > 0 && (
+          <>
+            <select
+              value={selected}
+              onChange={(e) => {
+                setSelected(e.target.value)
+                setConfirmDelete(false)
+              }}
+              className="h-7 rounded-md border border-border bg-background px-2 text-xs"
+            >
+              <option value="">Profil wählen…</option>
+              {profiles.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={!current || anyPending || applying}
+              onClick={handleApply}
+              className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/80 disabled:pointer-events-none disabled:opacity-40"
+            >
+              {applying ? "Wende an…" : "Anwenden"}
+            </button>
+          </>
+        )}
+
+        {addOpen ? (
+          <>
+            <Input
+              autoFocus
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveNew()
+                if (e.key === "Escape") {
+                  setAddOpen(false)
+                  setNameInput("")
+                }
+              }}
+              placeholder="Profilname…"
+              className="h-7 w-40 text-xs"
+            />
+            <button
+              type="button"
+              disabled={saving || !nameInput.trim()}
+              onClick={handleSaveNew}
+              className="shrink-0 rounded-md bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-40"
+            >
+              Speichern
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAddOpen(false)
+                setNameInput("")
+              }}
+              className="shrink-0 rounded-md px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent"
+            >
+              Abbrechen
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAddOpen(true)}
+            className="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            Aktuellen Zustand speichern
+          </button>
+        )}
+
+        {current &&
+          (confirmDelete ? (
+            <span className="flex shrink-0 items-center gap-1 text-xs">
+              <span className="text-muted-foreground">Löschen?</span>
+              <button
+                type="button"
+                onClick={handleDelete}
+                className="rounded-md bg-destructive/10 px-2 py-1 font-medium text-destructive hover:bg-destructive/20"
+              >
+                Ja
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(false)}
+                className="rounded-md px-2 py-1 text-muted-foreground hover:bg-accent"
+              >
+                Abbrechen
+              </button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              className="shrink-0 rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+            >
+              Löschen
+            </button>
+          ))}
+      </div>
+
+      {profiles.length === 0 && !addOpen && (
+        <p className="text-xs text-muted-foreground">
+          Noch kein Profil — aktuellen Zustand als Profil speichern.
+        </p>
+      )}
+
+      {current && <p className="text-xs text-muted-foreground">{profileSummary(current, skills)}</p>}
     </div>
   )
 }

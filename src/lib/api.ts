@@ -314,6 +314,40 @@ export async function checkGlobalRoute(): Promise<GlobalRouteWarning> {
   return invoke<GlobalRouteWarning>("check_global_route")
 }
 
+// --- Profiles (named skill-state snapshots) -----------------------------------
+
+export type Profile = {
+  name: string
+  /** skill folder name -> "active" | "manual" | "disabled" (see SkillState). */
+  skills: Record<string, string>
+}
+
+export async function listProfiles(): Promise<Profile[]> {
+  if (!isTauri) return mockProfiles
+  return invoke<Profile[]>("list_profiles")
+}
+
+/** Inserts, or — same name, case-insensitive — overwrites in place. Returns the new list. */
+export async function saveProfile(name: string, skills: Record<string, string>): Promise<Profile[]> {
+  if (!isTauri) {
+    const trimmed = name.trim()
+    const idx = mockProfiles.findIndex((p) => p.name.toLowerCase() === trimmed.toLowerCase())
+    const profile = { name: trimmed, skills }
+    if (idx >= 0) mockProfiles[idx] = profile
+    else mockProfiles.push(profile)
+    return mockProfiles
+  }
+  return invoke<Profile[]>("save_profile", { name, skills })
+}
+
+export async function deleteProfile(name: string): Promise<Profile[]> {
+  if (!isTauri) {
+    mockProfiles = mockProfiles.filter((p) => p.name.toLowerCase() !== name.trim().toLowerCase())
+    return mockProfiles
+  }
+  return invoke<Profile[]>("delete_profile", { name })
+}
+
 /** Metadata-only pass over every transcript in ~/.claude/projects. Slow-ish (reads
  *  hundreds of MB), so callers show a loading state and cache the result. */
 export async function analyzeUsage(): Promise<UsageReport> {
@@ -370,6 +404,17 @@ const mockSkills: Skill[] = [
     linked: true,
     source: "greensock/gsap-skills",
     sourceUrl: "https://github.com/greensock/gsap-skills",
+  },
+]
+
+let mockProfiles: Profile[] = [
+  {
+    name: "Website-Projekt",
+    skills: { humanizer: "active", "playwright-cli": "manual", "gsap-core": "disabled", "gsap-utils": "disabled" },
+  },
+  {
+    name: "Minimal",
+    skills: { humanizer: "disabled", "playwright-cli": "disabled", "gsap-core": "disabled", "gsap-utils": "active" },
   },
 ]
 

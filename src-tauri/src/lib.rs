@@ -1,4 +1,5 @@
 mod omniroute;
+mod profiles;
 mod usage;
 
 use serde::Serialize;
@@ -466,7 +467,10 @@ pub fn run() {
             omniroute::open_omniroute_terminal,
             omniroute::check_global_route,
             omniroute::test_omniroute_connection,
-            usage::analyze_usage
+            usage::analyze_usage,
+            profiles::list_profiles,
+            profiles::save_profile,
+            profiles::delete_profile
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

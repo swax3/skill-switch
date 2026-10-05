@@ -19,6 +19,7 @@ Built with Tauri v2, React, Tailwind v4, and shadcn/ui.
   - **Activate**: `Lies <full path to SKILL.md> und wende diesen Skill ab jetzt an.`
   - **Ignore**: `Ignoriere ab sofort den Skill <name> vollständig.`
 - Read-only view of installed plugins and configured MCP servers (from `~/.claude/plugins/installed_plugins.json`, `~/.claude/settings.json`, and `~/.claude.json`) — for visibility only; toggle those from Claude Code itself.
+- **Profiles**: save the current set of skill states as a named preset (e.g. "Website-Projekt") and re-apply it later with one click. Applying only touches skills whose state actually differs from the profile — the rest are left alone — and skills the profile mentions but that aren't currently installed are skipped and reported, not treated as an error. Stored in its own `profiles.json` under the app's local data folder, independent of the skill folders and `settings.json` themselves.
 - Manual refresh button, since the list is only read on launch/toggle.
 - Follows the OS light/dark theme; remembers window size and position.
 
