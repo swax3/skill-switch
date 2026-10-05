@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { ClipboardCopy, ClipboardX, ExternalLink, Link2, RefreshCw, Search } from "lucide-react"
 import { toast } from "sonner"
-import { openExternal, type Skill } from "@/lib/api"
+import { openExternal, type AttributionUsage, type Skill } from "@/lib/api"
 import { Input } from "@/components/ui/input"
 import {
   Tooltip,
@@ -48,6 +48,15 @@ type SkillListProps = {
   onStateChange: (skill: Skill, next: SkillState) => void
   onGroupStateChange: (skills: Skill[], next: SkillState) => void
   onRefresh: () => void
+  /** From the Usage tab's transcript analysis — null until loaded once. */
+  usage: AttributionUsage[] | null
+  usageLoading: boolean
+  onLoadUsage: () => void
+}
+
+const germanDate = (iso: string) => {
+  const [y, m, d] = iso.split("-")
+  return `${d}.${m}.${y}`
 }
 
 function activationPrompt(skill: Skill): string {
@@ -74,6 +83,9 @@ export function SkillList({
   onStateChange,
   onGroupStateChange,
   onRefresh,
+  usage,
+  usageLoading,
+  onLoadUsage,
 }: SkillListProps) {
   const [query, setQuery] = useState("")
 
@@ -108,6 +120,16 @@ export function SkillList({
           disabled={loading}
           onClick={onRefresh}
         />
+        {!usage && (
+          <button
+            type="button"
+            disabled={usageLoading}
+            onClick={onLoadUsage}
+            className="shrink-0 rounded-full px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+          >
+            {usageLoading ? "lädt…" : "Nutzungsdaten laden"}
+          </button>
+        )}
       </div>
 
       {loading ? (
@@ -123,6 +145,7 @@ export function SkillList({
               pending={pending}
               onStateChange={onStateChange}
               onGroupStateChange={onGroupStateChange}
+              usage={usage}
             />
           ))}
         </div>
@@ -136,11 +159,13 @@ function SkillGroupSection({
   pending,
   onStateChange,
   onGroupStateChange,
+  usage,
 }: {
   group: SourceGroup
   pending: Set<string>
   onStateChange: (skill: Skill, next: SkillState) => void
   onGroupStateChange: (skills: Skill[], next: SkillState) => void
+  usage: AttributionUsage[] | null
 }) {
   const anyPending = group.skills.some((s) => pending.has(s.name))
   return (
@@ -178,7 +203,13 @@ function SkillGroupSection({
         {group.skills.map((skill, i) => (
           <div key={skill.name}>
             {i > 0 && <div className="ml-4 h-px bg-border" />}
-            <SkillRow skill={skill} disabled={pending.has(skill.name)} onStateChange={onStateChange} />
+            <SkillRow
+              skill={skill}
+              disabled={pending.has(skill.name)}
+              onStateChange={onStateChange}
+              usageEntry={usage?.find((u) => u.name === skill.name) ?? null}
+              usageLoaded={usage !== null}
+            />
           </div>
         ))}
       </div>
@@ -195,10 +226,14 @@ function SkillRow({
   skill,
   disabled,
   onStateChange,
+  usageEntry,
+  usageLoaded,
 }: {
   skill: Skill
   disabled: boolean
   onStateChange: (skill: Skill, next: SkillState) => void
+  usageEntry: AttributionUsage | null
+  usageLoaded: boolean
 }) {
   return (
     <div className="flex items-center gap-3 px-4 py-2.5">
@@ -215,6 +250,18 @@ function SkillRow({
           )}
         </div>
         <p className="truncate text-xs text-muted-foreground">{skill.description}</p>
+        {usageLoaded && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <p className="truncate text-xs text-muted-foreground/70">
+                {usageEntry
+                  ? `In ${usageEntry.messages} Nachrichten aktiv · ${usageEntry.sessions} Sessions${usageEntry.lastDay ? ` · zuletzt ${germanDate(usageEntry.lastDay)}` : ""}`
+                  : "Keine Nutzung in den Transcripts"}
+              </p>
+            </TooltipTrigger>
+            <TooltipContent>Zählt Nachrichten, bei denen der Skill aktiv war — Korrelation, keine Kosten.</TooltipContent>
+          </Tooltip>
+        )}
       </div>
 
       <IconAction

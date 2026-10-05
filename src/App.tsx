@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { Info, Minus, Plug, Puzzle, Route, Square, X } from "lucide-react"
+import { Gauge, Info, Minus, Plug, Puzzle, Route, Square, X } from "lucide-react"
 import { toast } from "sonner"
 import {
   addOmnirouteProject,
+  analyzeUsage,
   checkGlobalRoute,
   listSkills,
   readEnv,
@@ -18,15 +19,17 @@ import {
   type GlobalRouteWarning,
   type OmniState,
   type Skill,
+  type UsageReport,
 } from "@/lib/api"
 import { SkillList, type SkillState } from "@/components/skill-list"
 import { ConfigPanel } from "@/components/config-panel"
 import { OmniroutePanel } from "@/components/omniroute-panel"
+import { UsagePanel } from "@/components/usage-panel"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
-type View = "skills" | "config" | "omniroute"
+type View = "skills" | "config" | "omniroute" | "usage"
 
 const appWindow = "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null
 
@@ -35,6 +38,8 @@ const SIDEBAR_NOTE: Partial<Record<View, string>> = {
     'Alle drei Zustände wirken erst in der nächsten Claude-Code-Session. In laufenden Chats: die Kopier-Buttons nutzen.',
   omniroute:
     'Gilt nur für Terminal-Sessions in diesem Ordner. Die Desktop-App läuft immer über Anthropic.',
+  usage:
+    'Prozent-Anteile sind eine Heuristik nach API-Preisverhältnis. Wie Anthropic Cache-Reads gegen das Abo-Limit gewichtet, ist lokal nicht sichtbar.',
 }
 
 function App() {
@@ -47,6 +52,25 @@ function App() {
   const [omni, setOmni] = useState<OmniState | null>(null)
   const [omniLoading, setOmniLoading] = useState(true)
   const [globalWarn, setGlobalWarn] = useState<GlobalRouteWarning | null>(null)
+  const [usage, setUsage] = useState<UsageReport | null>(null)
+  const [usageLoading, setUsageLoading] = useState(false)
+  const [usageError, setUsageError] = useState<string | null>(null)
+
+  // Reads hundreds of MB of transcripts, so only on demand: first visit to the
+  // tab, then via the refresh button — never at app start.
+  const refreshUsage = () => {
+    setUsageLoading(true)
+    setUsageError(null)
+    return analyzeUsage()
+      .then(setUsage)
+      .catch((e) => setUsageError(String(e)))
+      .finally(() => setUsageLoading(false))
+  }
+
+  useEffect(() => {
+    if (view === "usage" && !usage && !usageLoading && !usageError) refreshUsage()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view])
 
   const refreshSkills = () =>
     listSkills()
@@ -202,9 +226,20 @@ function App() {
                 onStateChange={handleStateChange}
                 onGroupStateChange={handleGroupStateChange}
                 onRefresh={refreshSkills}
+                usage={usage?.skillUsage ?? null}
+                usageLoading={usageLoading}
+                onLoadUsage={refreshUsage}
               />
             ) : view === "config" ? (
-              <ConfigPanel env={env} loading={envLoading} />
+              <ConfigPanel
+                env={env}
+                loading={envLoading}
+                mcpUsage={usage?.mcpUsage ?? null}
+                usageLoading={usageLoading}
+                onLoadUsage={refreshUsage}
+              />
+            ) : view === "usage" ? (
+              <UsagePanel report={usage} loading={usageLoading} error={usageError} onRefresh={refreshUsage} />
             ) : (
               <OmniroutePanel
                 omni={omni}
@@ -308,6 +343,12 @@ function Sidebar({
           active={view === "omniroute"}
           onClick={() => onChange("omniroute")}
           badge={omniBadge}
+        />
+        <NavItem
+          icon={Gauge}
+          label="Usage"
+          active={view === "usage"}
+          onClick={() => onChange("usage")}
         />
       </nav>
 

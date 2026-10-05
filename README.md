@@ -38,6 +38,15 @@ Routes individual, deliberately-added "throwaway" project folders through a loca
 - The OmniRoute API key is stored write-only from the frontend's perspective (`apiKeySet: boolean`, never the plaintext, crosses the Tauri IPC boundary).
 - **"Test connection" button** — Claude Code itself has no way to show which endpoint or model it's actually using, so this sends one tiny real request through the configured URL + key and displays the model that answered.
 
+### Usage tab
+
+Explains where your Claude Code usage limit goes, from the transcripts Claude Code already keeps locally (`~/.claude/projects/**/*.jsonl`).
+
+- **Metadata only, nothing stored.** Reads token counts, model, effort, tool names and error/compaction/rate-limit markers per request. Prompt text and file contents are never evaluated, kept, or sent over IPC. No collector, no database, no hooks — the transcript files are the data source, analysed on demand when you open the tab.
+- Deterministic findings with evidence: context size per request (the usual #1 driver — every request re-reads the whole context), long-lived sessions, workflow/multi-agent share, effort `xhigh` share, requests per turn, and how often the 5-hour limit was hit.
+- Percentages are labelled honestly: *gemessen* (measured), *berechnet* (derived — the token weighting is a heuristic mirroring API price ratios; how the subscription limit weights cached tokens isn't observable locally), or *heuristik* (threshold rule). Thresholds live in one `RULE_*` block in `src-tauri/src/usage.rs`.
+- A **trend** section compares the last 7 days against the 7 days before on the same metrics, plus a 14-day list and per-skill/per-MCP-server usage counts pulled from transcript attribution markers — a correlation ("this skill was active in N messages"), never a cost figure, and shown in the Skills and Plugins & MCP tabs too.
+
 ## Requirements
 
 - Windows 10/11
