@@ -8,6 +8,7 @@
   "permissions": [
     "core:default",
     "core:window:allow-close",
+    "notification:default",
     {
       "identifier": "shell:allow-open",
       "allow": [{ "url": "^https://" }]

@@ -1,12 +1,15 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { Gauge, Info, Minus, Plug, Puzzle, Route, Square, X } from "lucide-react"
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification"
+import { Activity, Gauge, Info, Minus, Plug, Puzzle, Route, Square, X } from "lucide-react"
 import { toast } from "sonner"
 import {
   addOmnirouteProject,
   analyzeUsage,
   checkGlobalRoute,
   deleteProfile,
+  isTauri,
+  listLiveSessions,
   listProfiles,
   listSkills,
   readEnv,
@@ -20,20 +23,34 @@ import {
   setSkillManualOnly,
   type EnvInfo,
   type GlobalRouteWarning,
+  type LiveSession,
   type OmniState,
   type Profile,
   type Skill,
   type UsageReport,
 } from "@/lib/api"
+import { notificationsFor, type Memo } from "@/lib/notify"
 import { skillState, SkillList, type SkillState } from "@/components/skill-list"
 import { ConfigPanel } from "@/components/config-panel"
 import { OmniroutePanel } from "@/components/omniroute-panel"
 import { UsagePanel } from "@/components/usage-panel"
+import { LivePanel } from "@/components/live-panel"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
-type View = "skills" | "config" | "omniroute" | "usage"
+const LIVE_POLL_MS = 5000
+const NOTIFY_KEY = "skillswitch.notify"
+
+const readNotifyPref = () => {
+  try {
+    return localStorage.getItem(NOTIFY_KEY) !== "0"
+  } catch {
+    return true
+  }
+}
+
+type View = "skills" | "config" | "omniroute" | "usage" | "live"
 
 const appWindow = "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null
 
@@ -44,6 +61,8 @@ const SIDEBAR_NOTE: Partial<Record<View, string>> = {
     'Gilt nur für Terminal-Sessions in diesem Ordner. Die Desktop-App läuft immer über Anthropic.',
   usage:
     'Prozent-Anteile sind eine Heuristik nach API-Preisverhältnis. Wie Anthropic Cache-Reads gegen das Abo-Limit gewichtet, ist lokal nicht sichtbar.',
+  live:
+    'Desktop-App und Terminal schreiben dieselben Transcripts — beide erscheinen hier. Ein Live-Prozentwert des 5h-Limits existiert lokal nicht.',
 }
 
 function App() {
@@ -60,6 +79,12 @@ function App() {
   const [usage, setUsage] = useState<UsageReport | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
+  const [live, setLive] = useState<LiveSession[] | null>(null)
+  const [liveError, setLiveError] = useState<string | null>(null)
+  const [liveUpdatedAt, setLiveUpdatedAt] = useState<number | null>(null)
+  const [notifyEnabled, setNotifyEnabled] = useState(readNotifyPref)
+  const [notifyBlocked, setNotifyBlocked] = useState(false)
+  const notifyMemo = useRef<Map<string, Memo>>(new Map())
 
   // Reads hundreds of MB of transcripts, so only on demand: first visit to the
   // tab, then via the refresh button — never at app start.
@@ -76,6 +101,53 @@ function App() {
     if (view === "usage" && !usage && !usageLoading && !usageError) refreshUsage()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
+
+  // Polls app-wide (not just while the Live tab is open) so a session getting into
+  // trouble can still raise a notification while the user works in another tab.
+  useEffect(() => {
+    let cancelled = false
+    const tick = () =>
+      listLiveSessions()
+        .then(async (sessions) => {
+          if (cancelled) return
+          setLive(sessions)
+          setLiveError(null)
+          setLiveUpdatedAt(Date.now())
+          const { events, next } = notificationsFor(notifyMemo.current, sessions)
+          notifyMemo.current = next
+          if (!notifyEnabled || events.length === 0) return
+          if (!isTauri) {
+            events.forEach((e) => console.info(`[notify] ${e.title}: ${e.body}`))
+            return
+          }
+          try {
+            let granted = await isPermissionGranted()
+            if (!granted) granted = (await requestPermission()) === "granted"
+            if (cancelled) return
+            setNotifyBlocked(!granted)
+            if (granted) events.forEach((e) => sendNotification({ title: e.title, body: e.body }))
+          } catch (e) {
+            toast.error(String(e))
+          }
+        })
+        .catch((e) => !cancelled && setLiveError(String(e)))
+    tick()
+    const id = setInterval(tick, LIVE_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [notifyEnabled])
+
+  function handleNotifyEnabledChange(enabled: boolean) {
+    setNotifyEnabled(enabled)
+    try {
+      localStorage.setItem(NOTIFY_KEY, enabled ? "1" : "0")
+    } catch {
+      // ponytail: localStorage can throw in a locked-down profile; the toggle still
+      // works for this session, it just won't persist.
+    }
+  }
 
   const refreshSkills = () =>
     listSkills()
@@ -284,13 +356,14 @@ function App() {
   }
 
   const activeRouteCount = omni?.projects.filter((p) => p.active).length ?? 0
+  const liveActiveCount = live?.filter((s) => s.active).length ?? 0
 
   return (
     <TooltipProvider>
       <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
         <TitleBar />
         <div className="flex min-h-0 flex-1">
-          <Sidebar view={view} onChange={setView} omniBadge={activeRouteCount} />
+          <Sidebar view={view} onChange={setView} omniBadge={activeRouteCount} liveBadge={liveActiveCount} />
           <main className="min-w-0 flex-1 overflow-hidden">
             {view === "skills" ? (
               <SkillList
@@ -318,6 +391,15 @@ function App() {
               />
             ) : view === "usage" ? (
               <UsagePanel report={usage} loading={usageLoading} error={usageError} onRefresh={refreshUsage} />
+            ) : view === "live" ? (
+              <LivePanel
+                sessions={live}
+                error={liveError}
+                updatedAt={liveUpdatedAt}
+                notifyEnabled={notifyEnabled}
+                notifyBlocked={notifyBlocked}
+                onNotifyEnabledChange={handleNotifyEnabledChange}
+              />
             ) : (
               <OmniroutePanel
                 omni={omni}
@@ -394,10 +476,12 @@ function Sidebar({
   view,
   onChange,
   omniBadge,
+  liveBadge,
 }: {
   view: View
   onChange: (v: View) => void
   omniBadge: number
+  liveBadge: number
 }) {
   const note = SIDEBAR_NOTE[view]
   return (
@@ -421,6 +505,13 @@ function Sidebar({
           active={view === "omniroute"}
           onClick={() => onChange("omniroute")}
           badge={omniBadge}
+        />
+        <NavItem
+          icon={Activity}
+          label="Live"
+          active={view === "live"}
+          onClick={() => onChange("live")}
+          badge={liveBadge}
         />
         <NavItem
           icon={Gauge}

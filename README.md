@@ -48,6 +48,10 @@ Explains where your Claude Code usage limit goes, from the transcripts Claude Co
 - Percentages are labelled honestly: *gemessen* (measured), *berechnet* (derived — the token weighting is a heuristic mirroring API price ratios; how the subscription limit weights cached tokens isn't observable locally), or *heuristik* (threshold rule). Thresholds live in one `RULE_*` block in `src-tauri/src/usage.rs`.
 - A **trend** section compares the last 7 days against the 7 days before on the same metrics, plus a 14-day list and per-skill/per-MCP-server usage counts pulled from transcript attribution markers — a correlation ("this skill was active in N messages"), never a cost figure, and shown in the Skills and Plugins & MCP tabs too.
 
+### Live tab
+
+Shows which Claude Code sessions are writing right now (Desktop app and CLI both write the same transcripts), the context size their last request actually read, requests and failed tool calls in the current turn, session age, active subagents, and — if the transcript recorded a 5-hour-limit rejection — the reset countdown. Each session gets concrete advice for the next prompt (compact now / soon / fine, retry-loop suspicion, session too old, effort xhigh) with a one-click copy of the matching slash command. Polling only reads bytes appended since the previous poll, so it's cheap even on 100 MB transcripts. Nothing can be executed inside a running session from outside — the app prepares the command, you paste it. Polling now runs app-wide (not just while the tab is open), and a "Benachrichtigungen" toggle in the tab header raises one Windows notification per session per problem — compact-now, a retry loop, or the 5-hour reset — instead of one per 5-second poll. A one-click installable `UserPromptSubmit` hook mirrors the compact warning directly in the Claude Code chat itself (Desktop and CLI), so you see it even with the app closed.
+
 ## Requirements
 
 - Windows 10/11

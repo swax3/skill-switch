@@ -60,6 +60,14 @@ export type ConnectionTestResult = {
   latencyMs: number
 }
 
+// --- Context-Hook (UserPromptSubmit hook that warns in the chat) -------------
+
+export type HookStatus = {
+  installed: boolean
+  scriptPath: string
+  settingsPath: string
+}
+
 // --- Usage (metadata-only analysis of ~/.claude/projects transcripts) ---------
 
 export type Tokens = {
@@ -160,7 +168,7 @@ export type UsageReport = {
 }
 
 // Backend structs are #[serde(rename_all = "camelCase")], so field names line up as-is.
-const isTauri = "__TAURI_INTERNALS__" in window
+export const isTauri = "__TAURI_INTERNALS__" in window
 
 export async function listSkills(): Promise<Skill[]> {
   if (!isTauri) return mockSkills
@@ -314,6 +322,27 @@ export async function checkGlobalRoute(): Promise<GlobalRouteWarning> {
   return invoke<GlobalRouteWarning>("check_global_route")
 }
 
+export async function contextHookStatus(): Promise<HookStatus> {
+  if (!isTauri) return mockHookStatus
+  return invoke<HookStatus>("context_hook_status")
+}
+
+export async function installContextHook(): Promise<void> {
+  if (!isTauri) {
+    mockHookStatus.installed = true
+    return
+  }
+  await invoke("install_context_hook")
+}
+
+export async function uninstallContextHook(): Promise<void> {
+  if (!isTauri) {
+    mockHookStatus.installed = false
+    return
+  }
+  await invoke("uninstall_context_hook")
+}
+
 // --- Profiles (named skill-state snapshots) -----------------------------------
 
 export type Profile = {
@@ -346,6 +375,42 @@ export async function deleteProfile(name: string): Promise<Profile[]> {
     return mockProfiles
   }
   return invoke<Profile[]>("delete_profile", { name })
+}
+
+// --- Live (sessions currently writing transcripts) ---------------------------
+
+export type Advice = {
+  level: "high" | "medium" | "ok" | "info"
+  text: string
+  command: string | null
+}
+
+export type LiveSession = {
+  id: string
+  title: string | null
+  project: string
+  cwd: string | null
+  entrypoint: string
+  active: boolean
+  secondsSinceActivity: number
+  ageSecs: number
+  turns: number
+  requests: number
+  turnRequests: number
+  turnErrors: number
+  compactions: number
+  model: string | null
+  effort: string | null
+  context: number
+  limitResetInSecs: number | null
+  agentsActive: number
+  advice: Advice[]
+}
+
+/** Cheap to poll: the backend keeps a per-file cursor and only reads appended bytes. */
+export async function listLiveSessions(): Promise<LiveSession[]> {
+  if (!isTauri) return mockLive
+  return invoke<LiveSession[]>("list_live_sessions")
 }
 
 /** Metadata-only pass over every transcript in ~/.claude/projects. Slow-ish (reads
@@ -454,6 +519,60 @@ const mockOmniState: OmniState = {
 }
 
 let mockServiceRunning = false
+
+const mockLive: LiveSession[] = [
+  {
+    id: "a3f9c210",
+    title: "Refactor settings page",
+    project: "my-website",
+    cwd: "C:\\Users\\you\\Documents\\my-website",
+    entrypoint: "Desktop",
+    active: true,
+    secondsSinceActivity: 12,
+    ageSecs: 3 * 86_400,
+    turns: 48,
+    requests: 520,
+    turnRequests: 9,
+    turnErrors: 0,
+    compactions: 1,
+    model: "claude-opus-5-5",
+    effort: "xhigh",
+    context: 412_000,
+    limitResetInSecs: null,
+    agentsActive: 1,
+    advice: [
+      { level: "high", text: "Kontext 412k — jetzt kompaktieren oder die nächste Aufgabe in einer neuen Session starten.", command: "/compact focus on " },
+      { level: "medium", text: "Session ist 3 Tage alt (48 Turns). Neue Session pro Aufgabe.", command: null },
+      { level: "info", text: "Effort xhigh aktiv — für Implementierung reicht meist high.", command: null },
+      { level: "info", text: "1 Agent(s) schreiben gerade — jeder mit eigenem Kontext.", command: null },
+    ],
+  },
+  {
+    id: "7b2e4d91",
+    title: null,
+    project: "data-pipeline",
+    cwd: null,
+    entrypoint: "Terminal",
+    active: false,
+    secondsSinceActivity: 4_100,
+    ageSecs: 9 * 86_400,
+    turns: 140,
+    requests: 1_520,
+    turnRequests: 18,
+    turnErrors: 4,
+    compactions: 5,
+    model: "claude-sonnet-5-5",
+    effort: "xhigh",
+    context: 130_000,
+    limitResetInSecs: 1_800,
+    agentsActive: 0,
+    advice: [
+      { level: "ok", text: "Kontext 130k — unkritisch. Bei Themenwechsel trotzdem /clear.", command: "/clear" },
+      { level: "info", text: "5h-Limit erreicht — Reset in 30 min.", command: null },
+      { level: "medium", text: "Aktueller Turn: 18 Requests, 4 fehlgeschlagene Tool-Aufrufe — sieht nach einer Schleife aus.", command: null },
+    ],
+  },
+]
 
 const mockTokens = (requests: number, ctx: number, output: number): Tokens => ({
   requests,
@@ -566,4 +685,10 @@ const mockGlobalRoute: GlobalRouteWarning = {
   settingsJson: null,
   userEnv: null,
   machineEnv: null,
+}
+
+const mockHookStatus: HookStatus = {
+  installed: false,
+  scriptPath: "C:\\Users\\you\\AppData\\Local\\com.skillswitch.app\\context-hook.ps1",
+  settingsPath: "C:\\Users\\you\\.claude\\settings.json",
 }

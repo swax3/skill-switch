@@ -1,3 +1,5 @@
+mod hook;
+mod live;
 mod omniroute;
 mod profiles;
 mod usage;
@@ -14,7 +16,9 @@ const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
 /// Serializes read-modify-write access to settings.json across concurrent commands
 /// (e.g. two skills toggled to "manual" within the same moment would otherwise race).
-static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
+/// `pub(crate)` so hook.rs's settings.json patch (context-hook install/uninstall)
+/// serializes against the same file too.
+pub(crate) static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
 // camelCase so struct fields line up with the TypeScript types without a manual mapper.
 #[derive(Serialize, Clone)]
@@ -298,11 +302,11 @@ pub(crate) fn read_json_file(path: &Path) -> Option<Value> {
         .and_then(|s| serde_json::from_str(&s).ok())
 }
 
-fn settings_path() -> Result<PathBuf, String> {
+pub(crate) fn settings_path() -> Result<PathBuf, String> {
     Ok(claude_dir()?.join("settings.json"))
 }
 
-fn read_settings() -> Result<Value, String> {
+pub(crate) fn read_settings() -> Result<Value, String> {
     let path = settings_path()?;
     match fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s)
@@ -311,7 +315,7 @@ fn read_settings() -> Result<Value, String> {
     }
 }
 
-fn write_settings(value: &Value) -> Result<(), String> {
+pub(crate) fn write_settings(value: &Value) -> Result<(), String> {
     let path = settings_path()?;
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| format!("Konnte settings.json nicht serialisieren: {e}"))?;
@@ -438,7 +442,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(omniroute::ProxyState(Mutex::new(None)))
+        .manage(live::LiveState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -467,7 +473,11 @@ pub fn run() {
             omniroute::open_omniroute_terminal,
             omniroute::check_global_route,
             omniroute::test_omniroute_connection,
+            hook::context_hook_status,
+            hook::install_context_hook,
+            hook::uninstall_context_hook,
             usage::analyze_usage,
+            live::list_live_sessions,
             profiles::list_profiles,
             profiles::save_profile,
             profiles::delete_profile
