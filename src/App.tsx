@@ -9,6 +9,7 @@ import {
   readEnv,
   readOmniroute,
   removeOmnirouteProject,
+  setGatewayDiscovery,
   setOmnirouteConfig,
   setProjectRoute,
   setSkillEnabled,
@@ -169,6 +170,21 @@ function App() {
     })
   }
 
+  async function handleToggleGatewayDiscovery(path: string, enabled: boolean) {
+    await withPending([path], async () => {
+      try {
+        const warning = await setGatewayDiscovery(path, enabled)
+        toast.success(
+          `Gateway-Modellauswahl für „${path}" ist jetzt ${enabled ? "an" : "aus"}. Wirkt ab der nächsten Terminal-Session.`
+        )
+        if (warning) toast.warning(warning)
+        await refreshOmni()
+      } catch (e) {
+        toast.error(String(e))
+      }
+    })
+  }
+
   const activeRouteCount = omni?.projects.filter((p) => p.active).length ?? 0
 
   return (
@@ -200,6 +216,7 @@ function App() {
                 onAddProject={handleAddProject}
                 onRemoveProject={handleRemoveProject}
                 onToggleProject={handleToggleProject}
+                onToggleGatewayDiscovery={handleToggleGatewayDiscovery}
               />
             )}
           </main>

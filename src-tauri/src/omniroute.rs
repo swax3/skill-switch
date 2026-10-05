@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::os::windows::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
@@ -28,6 +28,10 @@ use crate::{claude_dir, read_json_file};
 
 const DEFAULT_BASE_URL: &str = "http://localhost:20128/v1";
 const OMNI_CONFIG_FILE: &str = "omniroute.json";
+/// Tells Claude Code to query the gateway's own `/v1/models` at startup and
+/// populate the `/model` picker with whatever it finds, instead of requiring an
+/// exact provider-prefixed model string to be typed or hardcoded. See CLAUDE.md.
+const GATEWAY_DISCOVERY_KEY: &str = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY";
 const MAX_BACKUPS: usize = 3;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
@@ -72,6 +76,9 @@ struct ProjectRoute {
     base_url: Option<String>,
     has_token: bool,
     gitignore_ok: bool,
+    /// env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY is set — only meaningful
+    /// while `active`, since it needs a base URL to query.
+    gateway_discovery: bool,
     error: Option<String>,
 }
 
@@ -201,7 +208,31 @@ fn apply_route(mut settings: Value, route: Option<(&str, &str)>) -> Result<Value
         None => {
             env_obj.remove("ANTHROPIC_BASE_URL");
             env_obj.remove("ANTHROPIC_AUTH_TOKEN");
+            // Orphaned without a base URL to discover from — clean it up too.
+            env_obj.remove(GATEWAY_DISCOVERY_KEY);
         }
+    }
+    if env_obj.is_empty() {
+        obj.remove("env");
+    }
+    Ok(settings)
+}
+
+fn apply_gateway_discovery(mut settings: Value, enabled: bool) -> Result<Value, String> {
+    let obj = settings
+        .as_object_mut()
+        .ok_or_else(|| "settings.local.json hat kein Objekt auf oberster Ebene.".to_string())?;
+    let env = obj
+        .entry("env")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let env_obj = env
+        .as_object_mut()
+        .ok_or_else(|| "\"env\" in settings.local.json ist kein Objekt.".to_string())?;
+
+    if enabled {
+        env_obj.insert(GATEWAY_DISCOVERY_KEY.to_string(), Value::String("1".to_string()));
+    } else {
+        env_obj.remove(GATEWAY_DISCOVERY_KEY);
     }
     if env_obj.is_empty() {
         obj.remove("env");
@@ -215,22 +246,30 @@ fn apply_route(mut settings: Value, route: Option<(&str, &str)>) -> Result<Value
 // taken when a file already existed; capped at MAX_BACKUPS newest per project.
 // ---------------------------------------------------------------------------
 
-fn backup_dir_for(app: &AppHandle, project: &Path) -> Result<PathBuf, String> {
+/// Per-project backup subfolder key (hash of the normalized project path, so a
+/// project path itself never becomes part of a filesystem path under app data).
+fn project_backup_key(project: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    normalize_key(project).hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn backup_dir(app: &AppHandle, subfolder: &str) -> Result<PathBuf, String> {
     let base = app
         .path()
         .app_local_data_dir()
         .map_err(|e| format!("Konnte lokalen App-Datenordner nicht finden: {e}"))?;
-    let mut hasher = DefaultHasher::new();
-    normalize_key(project).hash(&mut hasher);
-    let key = format!("{:016x}", hasher.finish());
-    let dir = base.join("backups").join(key);
+    let dir = base.join("backups").join(subfolder);
     fs::create_dir_all(&dir).map_err(|e| format!("Konnte Backup-Ordner nicht anlegen: {e}"))?;
     Ok(dir)
 }
 
 /// Best-effort: returns a warning message on failure, never blocks the caller.
-fn rotate_backup(app: &AppHandle, project: &Path, content: &str) -> Option<String> {
-    let dir = match backup_dir_for(app, project) {
+/// `subfolder` scopes backups (per-project hash for OmniRoute, a fixed name for
+/// hook.rs's shared settings.json); `file_label` is the backed-up file's own name,
+/// used as the backup filename prefix (e.g. "settings.local.json").
+pub(crate) fn rotate_backup(app: &AppHandle, subfolder: &str, file_label: &str, content: &str) -> Option<String> {
+    let dir = match backup_dir(app, subfolder) {
         Ok(d) => d,
         Err(e) => return Some(e),
     };
@@ -238,7 +277,7 @@ fn rotate_backup(app: &AppHandle, project: &Path, content: &str) -> Option<Strin
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let file = dir.join(format!("settings.local.json.{ts}.bak"));
+    let file = dir.join(format!("{file_label}.{ts}.bak"));
     if let Err(e) = fs::write(&file, content) {
         return Some(format!("Backup konnte nicht geschrieben werden: {e}"));
     }
@@ -310,6 +349,7 @@ fn read_project_route(raw: &str) -> ProjectRoute {
             base_url: None,
             has_token: false,
             gitignore_ok: false,
+            gateway_discovery: false,
             error: None,
         };
     }
@@ -324,6 +364,7 @@ fn read_project_route(raw: &str) -> ProjectRoute {
                 base_url: None,
                 has_token: false,
                 gitignore_ok,
+                gateway_discovery: false,
                 error: None,
             };
         }
@@ -340,6 +381,10 @@ fn read_project_route(raw: &str) -> ProjectRoute {
                 .and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN"))
                 .and_then(Value::as_str)
                 .is_some_and(|s| !s.is_empty());
+            let gateway_discovery = env
+                .and_then(|e| e.get(GATEWAY_DISCOVERY_KEY))
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty());
             ProjectRoute {
                 path: raw.to_string(),
                 exists: true,
@@ -347,6 +392,7 @@ fn read_project_route(raw: &str) -> ProjectRoute {
                 base_url,
                 has_token,
                 gitignore_ok,
+                gateway_discovery,
                 error: None,
             }
         }
@@ -357,6 +403,7 @@ fn read_project_route(raw: &str) -> ProjectRoute {
             base_url: None,
             has_token: false,
             gitignore_ok,
+            gateway_discovery: false,
             error: Some(format!("settings.local.json ist kein gültiges JSON: {e}")),
         },
     }
@@ -381,6 +428,65 @@ fn is_port_reachable(host: &str, port: u16) -> bool {
     addrs
         .into_iter()
         .any(|a| TcpStream::connect_timeout(&a, Duration::from_millis(300)).is_ok())
+}
+
+/// `{base_url}/messages` — the Anthropic-shaped endpoint Claude Code itself calls.
+/// Joins on the base URL's existing path so both "http://host:port" and
+/// "http://host:port/v1" style base URLs end up at the right place.
+fn messages_path(base_url: &str) -> Result<String, String> {
+    let url = url::Url::parse(base_url).map_err(|e| format!("Ungültige Basis-URL: {e}"))?;
+    Ok(format!("{}/messages", url.path().trim_end_matches('/')))
+}
+
+/// Minimal blocking HTTP/1.1 client for the connection-test request — OmniRoute is
+/// always local, plain HTTP (see CLAUDE.md: base URL empirically has no TLS), so a
+/// full HTTP client crate isn't worth adding for one diagnostic call. `Connection:
+/// close` lets us just read to EOF instead of parsing Content-Length/chunked framing.
+fn http_post_json(
+    host: &str,
+    port: u16,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+    timeout: Duration,
+) -> Result<(u16, String), String> {
+    let mut stream = TcpStream::connect((host, port))
+        .map_err(|e| format!("Verbindung zu {host}:{port} fehlgeschlagen: {e}"))?;
+    stream.set_read_timeout(Some(timeout)).ok();
+    stream.set_write_timeout(Some(timeout)).ok();
+
+    let mut request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    for (key, value) in headers {
+        request.push_str(&format!("{key}: {value}\r\n"));
+    }
+    request.push_str("\r\n");
+    request.push_str(body);
+
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("Senden an OmniRoute fehlgeschlagen: {e}"))?;
+
+    let mut raw = Vec::new();
+    stream
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("Antwort von OmniRoute konnte nicht gelesen werden: {e}"))?;
+    let raw = String::from_utf8_lossy(&raw);
+
+    let mut sections = raw.splitn(2, "\r\n\r\n");
+    let head = sections.next().unwrap_or_default();
+    let response_body = sections.next().unwrap_or_default().to_string();
+
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| "Ungültige HTTP-Antwort von OmniRoute.".to_string())?;
+
+    Ok((status, response_body))
 }
 
 // ---------------------------------------------------------------------------
@@ -487,7 +593,7 @@ pub fn set_project_route(app: AppHandle, path: String, active: bool) -> Result<O
     }
 
     let mut warning = if file_existed {
-        rotate_backup(&app, &project, &original_text)
+        rotate_backup(&app, &project_backup_key(&project), "settings.local.json", &original_text)
     } else {
         None
     };
@@ -508,6 +614,51 @@ pub fn set_project_route(app: AppHandle, path: String, active: bool) -> Result<O
     Ok(warning)
 }
 
+/// Toggles `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, independent of the main
+/// routing switch — but only meaningful once that's on, since discovery needs a
+/// base URL to query. Same read-patch-backup-write shape as `set_project_route`.
+#[tauri::command]
+pub fn set_gateway_discovery(app: AppHandle, path: String, enabled: bool) -> Result<Option<String>, String> {
+    let project = validate_project_path(&path)?;
+
+    let _guard = OMNI_LOCK.lock().map_err(|_| "Interner Sperr-Fehler.".to_string())?;
+
+    let settings_path = project_settings_path(&project);
+    let (original_text, file_existed) = match fs::read_to_string(&settings_path) {
+        Ok(s) => (s, true),
+        Err(_) => ("{}".to_string(), false),
+    };
+    let original_value: Value = serde_json::from_str(&original_text)
+        .map_err(|e| format!("settings.local.json ist kein gültiges JSON: {e}"))?;
+
+    let currently_routed = original_value
+        .get("env")
+        .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty());
+    if enabled && !currently_routed {
+        return Err("Erst \"über OmniRoute\" aktivieren.".to_string());
+    }
+
+    let patched = apply_gateway_discovery(original_value.clone(), enabled)?;
+    if patched == original_value {
+        return Ok(None);
+    }
+
+    let warning = if file_existed {
+        rotate_backup(&app, &project_backup_key(&project), "settings.local.json", &original_text)
+    } else {
+        None
+    };
+
+    let text = serde_json::to_string_pretty(&patched)
+        .map_err(|e| format!("Konnte settings.local.json nicht serialisieren: {e}"))?;
+    fs::write(&settings_path, text)
+        .map_err(|e| format!("Konnte settings.local.json nicht schreiben: {e}"))?;
+
+    Ok(warning)
+}
+
 #[tauri::command]
 pub fn add_gitignore_entry(path: String) -> Result<(), String> {
     let project = validate_project_path(&path)?;
@@ -521,6 +672,94 @@ pub fn omniroute_status(app: AppHandle) -> Result<bool, String> {
     Ok(is_port_reachable(&host, port))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionTestResult {
+    model: String,
+    latency_ms: u64,
+}
+
+/// Sends one tiny real request through the configured base URL + key and reports
+/// which model actually answered. Uses OmniRoute's own "auto" routing (its
+/// load-balancing/failover picks among whatever providers are currently active) —
+/// this tells you the proxy itself is reachable and working, not necessarily what
+/// a specific Claude Code model name would resolve to (Claude Code exposes neither
+/// the active base URL nor the real response model anywhere itself).
+#[tauri::command(async)]
+pub fn test_omniroute_connection(app: AppHandle) -> Result<ConnectionTestResult, String> {
+    let cfg = read_config(&app)?;
+    if cfg.api_key.is_empty() {
+        return Err("Kein OmniRoute-API-Key hinterlegt.".to_string());
+    }
+    let (host, port) = extract_host_port(&cfg.base_url)?;
+    let path = messages_path(&cfg.base_url)?;
+    let body = serde_json::json!({
+        "model": "auto/best-fast",
+        "max_tokens": 8,
+        "messages": [{ "role": "user", "content": "ping" }]
+    })
+    .to_string();
+
+    let started = SystemTime::now();
+    let (status, response_body) = http_post_json(
+        &host,
+        port,
+        &path,
+        &[("x-api-key", cfg.api_key.as_str()), ("anthropic-version", "2023-06-01")],
+        &body,
+        Duration::from_secs(20),
+    )?;
+    let latency_ms = started.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
+
+    let parsed: Value = serde_json::from_str(&response_body)
+        .map_err(|_| format!("Unerwartete Antwort von OmniRoute (HTTP {status}): {response_body}"))?;
+
+    if let Some(model) = parsed.get("model").and_then(Value::as_str) {
+        Ok(ConnectionTestResult { model: model.to_string(), latency_ms })
+    } else if let Some(message) = parsed.get("error").and_then(|e| e.get("message")).and_then(Value::as_str) {
+        Err(format!("OmniRoute-Fehler: {message}"))
+    } else {
+        Err(format!("Unerwartete Antwort von OmniRoute (HTTP {status}): {response_body}"))
+    }
+}
+
+/// The Skill Switch process's own PATH can be stale for a long-lived GUI app that
+/// was already running (or launched from a shortcut set up at an earlier login)
+/// before `npm install -g omniroute` added its bin dir to the user's PATH —
+/// Explorer-launched processes don't pick up env changes until the next logon,
+/// same root cause as the registry read in `check_global_route`. Merge the
+/// registry's current PATH in so a freshly installed npm-global command is found
+/// without requiring a logoff/logon.
+fn fresh_path() -> String {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::RegKey;
+
+    let registry_paths = [
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Environment")
+            .ok()
+            .and_then(|k| k.get_value::<String, _>("Path").ok()),
+        RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment")
+            .ok()
+            .and_then(|k| k.get_value::<String, _>("Path").ok()),
+    ];
+
+    let mut parts: Vec<String> = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(';')
+        .map(str::to_string)
+        .collect();
+    for entry in registry_paths.into_iter().flatten() {
+        for p in entry.split(';') {
+            if !p.is_empty() && !parts.iter().any(|existing| existing.eq_ignore_ascii_case(p)) {
+                parts.push(p.to_string());
+            }
+        }
+    }
+    parts.join(";")
+}
+
 #[tauri::command(async)]
 pub fn start_omniroute(app: AppHandle, state: State<ProxyState>) -> Result<(), String> {
     let cfg = read_config(&app)?;
@@ -530,8 +769,11 @@ pub fn start_omniroute(app: AppHandle, state: State<ProxyState>) -> Result<(), S
         return Err(format!("Auf Port {port} läuft bereits ein Dienst."));
     }
 
+    let path = fresh_path();
+
     let found_on_path = Command::new("where")
         .arg("omniroute")
+        .env("PATH", &path)
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map(|o| o.status.success())
@@ -547,6 +789,7 @@ pub fn start_omniroute(app: AppHandle, state: State<ProxyState>) -> Result<(), S
     // pipe never fills and hangs the child.
     let child = Command::new("cmd")
         .args(["/C", "omniroute"])
+        .env("PATH", &path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -671,6 +914,28 @@ mod tests {
     }
 
     #[test]
+    fn deactivating_route_also_clears_orphaned_gateway_discovery_flag() {
+        let settings = serde_json::json!({
+            "env": { "ANTHROPIC_BASE_URL": "http://localhost:20128/v1", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1", "OTHER_VAR": "keep-me" }
+        });
+        let s2 = apply_route(settings, None).unwrap();
+        assert!(s2["env"].get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY").is_none());
+        assert_eq!(s2["env"]["OTHER_VAR"], "keep-me");
+    }
+
+    #[test]
+    fn gateway_discovery_sets_and_clears_without_touching_siblings() {
+        let settings = serde_json::json!({ "env": { "ANTHROPIC_BASE_URL": "http://localhost:20128/v1", "OTHER_VAR": "keep-me" } });
+        let s2 = apply_gateway_discovery(settings, true).unwrap();
+        assert_eq!(s2["env"]["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"], "1");
+        assert_eq!(s2["env"]["OTHER_VAR"], "keep-me");
+
+        let s3 = apply_gateway_discovery(s2, false).unwrap();
+        assert!(s3["env"].get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY").is_none());
+        assert_eq!(s3["env"]["OTHER_VAR"], "keep-me");
+    }
+
+    #[test]
     fn route_drops_env_object_when_it_becomes_empty() {
         let settings = serde_json::json!({});
         let s2 = apply_route(settings, Some(("http://x", "k"))).unwrap();
@@ -710,6 +975,14 @@ mod tests {
         assert_eq!(extract_host_port("http://localhost:20128/v1").unwrap(), ("localhost".to_string(), 20128));
         assert_eq!(extract_host_port("http://localhost:20128").unwrap(), ("localhost".to_string(), 20128));
         assert!(extract_host_port("not a url").is_err());
+    }
+
+    #[test]
+    fn messages_path_joins_regardless_of_trailing_slash_or_missing_v1() {
+        assert_eq!(messages_path("http://localhost:20128/v1").unwrap(), "/v1/messages");
+        assert_eq!(messages_path("http://localhost:20128/v1/").unwrap(), "/v1/messages");
+        assert_eq!(messages_path("http://localhost:20128").unwrap(), "/messages");
+        assert!(messages_path("not a url").is_err());
     }
 
     #[test]

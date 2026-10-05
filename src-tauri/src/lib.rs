@@ -457,12 +457,14 @@ pub fn run() {
             omniroute::add_omniroute_project,
             omniroute::remove_omniroute_project,
             omniroute::set_project_route,
+            omniroute::set_gateway_discovery,
             omniroute::add_gitignore_entry,
             omniroute::omniroute_status,
             omniroute::start_omniroute,
             omniroute::stop_omniroute,
             omniroute::open_omniroute_terminal,
-            omniroute::check_global_route
+            omniroute::check_global_route,
+            omniroute::test_omniroute_connection
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

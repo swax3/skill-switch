@@ -38,6 +38,8 @@ export type ProjectRoute = {
   baseUrl: string | null
   hasToken: boolean
   gitignoreOk: boolean
+  /** env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY is set — only meaningful while active. */
+  gatewayDiscovery: boolean
   error: string | null
 }
 
@@ -51,6 +53,11 @@ export type GlobalRouteWarning = {
   settingsJson: string | null
   userEnv: string | null
   machineEnv: string | null
+}
+
+export type ConnectionTestResult = {
+  model: string
+  latencyMs: number
 }
 
 // Backend structs are #[serde(rename_all = "camelCase")], so field names line up as-is.
@@ -124,6 +131,7 @@ export async function addOmnirouteProject(path: string): Promise<void> {
       baseUrl: null,
       hasToken: false,
       gitignoreOk: false,
+      gatewayDiscovery: false,
       error: null,
     })
     return
@@ -147,10 +155,21 @@ export async function setProjectRoute(path: string, active: boolean): Promise<st
       project.active = active
       project.baseUrl = active ? mockOmniState.baseUrl : null
       project.hasToken = active
+      if (!active) project.gatewayDiscovery = false
     }
     return null
   }
   return invoke<string | null>("set_project_route", { path, active })
+}
+
+/** Returns a warning string if the change was applied but something needs attention. */
+export async function setGatewayDiscovery(path: string, enabled: boolean): Promise<string | null> {
+  if (!isTauri) {
+    const project = mockOmniState.projects.find((p) => p.path === path)
+    if (project) project.gatewayDiscovery = enabled
+    return null
+  }
+  return invoke<string | null>("set_gateway_discovery", { path, enabled })
 }
 
 export async function addGitignoreEntry(path: string): Promise<void> {
@@ -194,6 +213,14 @@ export async function openOmnirouteTerminal(path: string): Promise<void> {
 export async function checkGlobalRoute(): Promise<GlobalRouteWarning> {
   if (!isTauri) return mockGlobalRoute
   return invoke<GlobalRouteWarning>("check_global_route")
+}
+
+/** Sends one tiny real request through the configured route and reports which
+ *  model answered — uses OmniRoute's own "auto" routing, so this confirms the
+ *  proxy itself works, not necessarily what a specific Claude Code model resolves to. */
+export async function testOmnirouteConnection(): Promise<ConnectionTestResult> {
+  if (!isTauri) return { model: "auto/best-fast → gpt-5.5 (Vorschau)", latencyMs: 420 }
+  return invoke<ConnectionTestResult>("test_omniroute_connection")
 }
 
 // Dev-mock data so the UI can be previewed in a plain browser (no Tauri backend attached).
@@ -259,6 +286,7 @@ const mockOmniState: OmniState = {
       baseUrl: "http://localhost:20128/v1",
       hasToken: true,
       gitignoreOk: true,
+      gatewayDiscovery: false,
       error: null,
     },
     {
@@ -268,6 +296,7 @@ const mockOmniState: OmniState = {
       baseUrl: null,
       hasToken: false,
       gitignoreOk: false,
+      gatewayDiscovery: false,
       error: null,
     },
   ],

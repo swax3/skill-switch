@@ -36,6 +36,7 @@ Routes individual, deliberately-added "throwaway" project folders through a loca
 - If a project's `.gitignore` doesn't cover `settings.local.json`, the app offers to append that line (never overwrites) rather than blocking the toggle.
 - On launch, checks whether `ANTHROPIC_BASE_URL` is accidentally set globally — in `~/.claude/settings.json` or in the Windows registry (`HKCU`/`HKLM` `Environment`, not the process's own possibly-stale env snapshot) — and warns if so, since that would affect every project.
 - The OmniRoute API key is stored write-only from the frontend's perspective (`apiKeySet: boolean`, never the plaintext, crosses the Tauri IPC boundary).
+- **"Test connection" button** — Claude Code itself has no way to show which endpoint or model it's actually using, so this sends one tiny real request through the configured URL + key and displays the model that answered.
 
 ## Requirements
 

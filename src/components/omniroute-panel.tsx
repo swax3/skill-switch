@@ -2,7 +2,9 @@ import { useEffect, useState } from "react"
 import {
   AlertTriangle,
   Folder,
+  Info,
   Play,
+  Plug,
   RefreshCw,
   Square,
   Terminal,
@@ -15,6 +17,7 @@ import {
   openOmnirouteTerminal,
   startOmniroute,
   stopOmniroute,
+  testOmnirouteConnection,
   type GlobalRouteWarning,
   type OmniState,
   type ProjectRoute,
@@ -36,6 +39,7 @@ type OmniroutePanelProps = {
   onAddProject: (path: string) => Promise<void>
   onRemoveProject: (path: string) => Promise<void>
   onToggleProject: (path: string, active: boolean) => Promise<void>
+  onToggleGatewayDiscovery: (path: string, enabled: boolean) => Promise<void>
 }
 
 export function OmniroutePanel({
@@ -48,6 +52,7 @@ export function OmniroutePanel({
   onAddProject,
   onRemoveProject,
   onToggleProject,
+  onToggleGatewayDiscovery,
 }: OmniroutePanelProps) {
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-6">
@@ -67,6 +72,7 @@ export function OmniroutePanel({
             onAddProject={onAddProject}
             onRemoveProject={onRemoveProject}
             onToggleProject={onToggleProject}
+            onToggleGatewayDiscovery={onToggleGatewayDiscovery}
           />
         </>
       )}
@@ -108,6 +114,8 @@ function GlobalLeakBanner({ warn }: { warn: GlobalRouteWarning }) {
 function ServiceCard({ baseUrl }: { baseUrl: string }) {
   const [running, setRunning] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [lastTest, setLastTest] = useState<{ model: string; latencyMs: number } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -139,6 +147,7 @@ function ServiceCard({ baseUrl }: { baseUrl: string }) {
       await stopOmniroute()
       toast.success("OmniRoute gestoppt.")
       setRunning(await omnirouteStatus())
+      setLastTest(null)
     } catch (e) {
       toast.error(String(e))
     } finally {
@@ -146,45 +155,83 @@ function ServiceCard({ baseUrl }: { baseUrl: string }) {
     }
   }
 
+  async function handleTest() {
+    setTesting(true)
+    try {
+      const result = await testOmnirouteConnection()
+      setLastTest(result)
+      toast.success(`OmniRoute antwortet — Modell: ${result.model} (${result.latencyMs} ms)`)
+    } catch (e) {
+      setLastTest(null)
+      toast.error(String(e))
+    } finally {
+      setTesting(false)
+    }
+  }
+
   return (
-    <section className="flex items-center justify-between rounded-[10px] border border-border bg-card px-4 py-3">
-      <div className="flex items-center gap-2.5">
-        <span
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
-            running ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"
-          )}
-        >
+    <section className="flex flex-col gap-2 rounded-[10px] border border-border bg-card px-4 py-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
           <span
             className={cn(
-              "size-1.5 rounded-full",
-              running ? "bg-primary" : "bg-muted-foreground/50"
+              "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
+              running ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"
             )}
-          />
-          {running === null ? "prüfe…" : running ? "läuft" : "läuft nicht"}
-        </span>
-        <span className="text-xs text-muted-foreground">{baseUrl}</span>
+          >
+            <span
+              className={cn(
+                "size-1.5 rounded-full",
+                running ? "bg-primary" : "bg-muted-foreground/50"
+              )}
+            />
+            {running === null ? "prüfe…" : running ? "läuft" : "läuft nicht"}
+          </span>
+          <span className="text-xs text-muted-foreground">{baseUrl}</span>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={busy || running === true}
+            onClick={handleStart}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/80 disabled:pointer-events-none disabled:opacity-40"
+          >
+            <Play className="size-3.5" />
+            Starten
+          </button>
+          <button
+            type="button"
+            disabled={busy || running === false}
+            onClick={handleStop}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-secondary px-2.5 py-1.5 text-xs font-medium text-secondary-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-40"
+          >
+            <Square className="size-3.5" />
+            Stoppen
+          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                disabled={testing || running !== true}
+                onClick={handleTest}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-secondary px-2.5 py-1.5 text-xs font-medium text-secondary-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-40"
+              >
+                <Plug className="size-3.5" />
+                {testing ? "Teste…" : "Verbindung testen"}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Schickt eine winzige echte Anfrage über die aktuelle URL + Key und zeigt,
+              welches Modell gerade antwortet.
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          disabled={busy || running === true}
-          onClick={handleStart}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/80 disabled:pointer-events-none disabled:opacity-40"
-        >
-          <Play className="size-3.5" />
-          Starten
-        </button>
-        <button
-          type="button"
-          disabled={busy || running === false}
-          onClick={handleStop}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-secondary px-2.5 py-1.5 text-xs font-medium text-secondary-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-40"
-        >
-          <Square className="size-3.5" />
-          Stoppen
-        </button>
-      </div>
+      {lastTest && (
+        <p className="text-[11px] text-muted-foreground">
+          Letzter Test: OmniRoute antwortete mit <span className="font-medium text-foreground">{lastTest.model}</span> ({lastTest.latencyMs} ms)
+        </p>
+      )}
     </section>
   )
 }
@@ -266,6 +313,7 @@ function ProjectsSection({
   onAddProject,
   onRemoveProject,
   onToggleProject,
+  onToggleGatewayDiscovery,
 }: {
   omni: OmniState
   pending: Set<string>
@@ -273,6 +321,7 @@ function ProjectsSection({
   onAddProject: (path: string) => Promise<void>
   onRemoveProject: (path: string) => Promise<void>
   onToggleProject: (path: string, active: boolean) => Promise<void>
+  onToggleGatewayDiscovery: (path: string, enabled: boolean) => Promise<void>
 }) {
   return (
     <section>
@@ -304,6 +353,7 @@ function ProjectsSection({
                 disabled={pending.has(p.path)}
                 onRemove={() => onRemoveProject(p.path)}
                 onToggle={(active) => onToggleProject(p.path, active)}
+                onToggleGatewayDiscovery={(enabled) => onToggleGatewayDiscovery(p.path, enabled)}
                 onRefresh={onRefresh}
               />
             </div>
@@ -322,12 +372,14 @@ function ProjectRowView({
   disabled,
   onRemove,
   onToggle,
+  onToggleGatewayDiscovery,
   onRefresh,
 }: {
   project: ProjectRoute
   disabled: boolean
   onRemove: () => void
   onToggle: (active: boolean) => void
+  onToggleGatewayDiscovery: (enabled: boolean) => void
   onRefresh: () => void
 }) {
   const [confirmRemove, setConfirmRemove] = useState(false)
@@ -471,6 +523,46 @@ function ProjectRowView({
           >
             .gitignore ergänzen
           </button>
+        </div>
+      )}
+
+      {project.active && (
+        <div className="flex items-center justify-between gap-2 border-t border-border/60 pt-1.5">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">
+              Modellauswahl vom Gateway laden
+            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Info className="size-3 shrink-0 text-muted-foreground/50" />
+              </TooltipTrigger>
+              <TooltipContent className="max-w-56">
+                Claude Code fragt OmniRoute beim Start nach allen verfügbaren Modellen und
+                zeigt sie im <code>/model</code>-Picker. Achtung: Nicht jedes Modell
+                unterstützt Claude Codes Tool-Aufrufe (Datei-Bearbeitung, Bash) korrekt —
+                bei Fehlern wie „No such tool available" zurück zu einem Claude-Modell
+                wechseln.
+              </TooltipContent>
+            </Tooltip>
+          </div>
+          <span
+            role="switch"
+            aria-checked={project.gatewayDiscovery}
+            aria-disabled={disabled}
+            onClick={() => !disabled && onToggleGatewayDiscovery(!project.gatewayDiscovery)}
+            className={cn(
+              "relative inline-flex h-[18px] w-8 shrink-0 cursor-pointer items-center rounded-full transition-colors",
+              project.gatewayDiscovery ? "bg-primary" : "bg-input",
+              disabled && "pointer-events-none opacity-50"
+            )}
+          >
+            <span
+              className={cn(
+                "block size-3.5 translate-x-0.5 rounded-full bg-background transition-transform",
+                project.gatewayDiscovery && "translate-x-[15px]"
+              )}
+            />
+          </span>
         </div>
       )}
     </div>
